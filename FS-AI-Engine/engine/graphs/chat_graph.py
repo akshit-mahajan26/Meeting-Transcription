@@ -14,34 +14,16 @@ import time
 from typing import Any, Dict, List, Optional
 from langgraph.graph import StateGraph, START, END
 
-try:
-    from engine.core.config import settings
-except ModuleNotFoundError:
-    try:
-        from core.config import settings
-    except ModuleNotFoundError:
-        from ..core.config import settings
-
-try:
-    from .chat_nodes import (
-        ChatState,
-        extract_filters_node,
-        embed_query_node,
-        vector_retrieval_node,
-        llm_synthesis_node,
-        format_citations_node,
-        fallback_node,
-    )
-except ImportError:
-    from graphs.chat_nodes import (
-        ChatState,
-        extract_filters_node,
-        embed_query_node,
-        vector_retrieval_node,
-        llm_synthesis_node,
-        format_citations_node,
-        fallback_node,
-    )
+from ..core.config import settings
+from .chat_nodes import (
+    ChatState,
+    extract_filters_node,
+    embed_query_node,
+    vector_retrieval_node,
+    llm_synthesis_node,
+    format_citations_node,
+    fallback_node,
+)
 
 logger = logging.getLogger("fs-ai-engine.chat_graph")
 

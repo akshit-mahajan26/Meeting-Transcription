@@ -1,36 +1,21 @@
 """
-FS-AI-Engine/api/routers/engine.py
-===================================
+FS-AI-Engine/engine/api/routers/engine.py
+=========================================
 Dedicated AI Engine Query & RAG Orchestration Router.
 Routes client queries directly into the Universal RAG Pipeline (rag_service.py).
 """
 
-import sys
 import logging
-from pathlib import Path
-from typing import List, Optional, Dict, Any
+from typing import Optional
 from pydantic import BaseModel, Field
 from fastapi import APIRouter, status
 
-CURRENT_DIR = Path(__file__).resolve().parent
-AI_ENGINE_ROOT = CURRENT_DIR.parent.parent
-if str(AI_ENGINE_ROOT) not in sys.path:
-    sys.path.insert(0, str(AI_ENGINE_ROOT))
-
-try:
-    from services.rag_service import (
-        process_user_query,
-        CitationModel,
-        RAGQueryResponse,
-        UNIVERSAL_RAG_SYSTEM_PROMPT,
-    )
-except ModuleNotFoundError:
-    from engine.services.rag_service import (
-        process_user_query,
-        CitationModel,
-        RAGQueryResponse,
-        UNIVERSAL_RAG_SYSTEM_PROMPT,
-    )
+from engine.services.rag_service import (
+    process_user_query,
+    CitationModel,
+    RAGQueryResponse,
+    UNIVERSAL_RAG_SYSTEM_PROMPT,
+)
 
 logger = logging.getLogger("fs-ai-engine")
 

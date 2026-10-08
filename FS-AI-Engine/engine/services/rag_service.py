@@ -31,39 +31,21 @@ AI_ENGINE_ROOT = CURRENT_DIR.parent
 if str(AI_ENGINE_ROOT) not in sys.path:
     sys.path.insert(0, str(AI_ENGINE_ROOT))
 
-try:
-    from engine.core.config import settings
-    from engine.core.database import AsyncSessionLocal
-    from engine.services.embedding_service import EmbeddingService
-    from engine.services.llm_client import OpenRouterClient, get_openrouter_client
-    from engine.services.local_reranker import local_reranker
-except ModuleNotFoundError:
-    from core.config import settings
-    from core.database import AsyncSessionLocal
-    from services.embedding_service import EmbeddingService
-    from services.llm_client import OpenRouterClient, get_openrouter_client
-    from services.local_reranker import local_reranker
+from ..core.config import settings
+from ..core.database import AsyncSessionLocal
+from .embedding_service import EmbeddingService
+from .llm_client import OpenRouterClient, get_openrouter_client
+from .local_reranker import local_reranker
+from .ingestion_service import (
+    format_timestamp,
+    enrich_chunk_text,
+    prepare_chunk_for_embedding,
+)
 
 try:
-    from services.ingestion_service import (
-        format_timestamp,
-        enrich_chunk_text,
-        prepare_chunk_for_embedding,
-    )
-except ImportError:
-    from engine.services.ingestion_service import (
-        format_timestamp,
-        enrich_chunk_text,
-        prepare_chunk_for_embedding,
-    )
-
-try:
-    from graphs.chat_graph import run_chat_graph
+    from ..graphs.chat_graph import run_chat_graph
 except (ImportError, ModuleNotFoundError):
-    try:
-        from engine.graphs.chat_graph import run_chat_graph
-    except (ImportError, ModuleNotFoundError):
-        run_chat_graph = None
+    run_chat_graph = None
 
 UNIVERSAL_RAG_SYSTEM_PROMPT = """You are an expert Meeting Intelligence Assistant. Your primary goal is to provide clear, professional, and conversational answers to *any* user query regarding ingested meeting transcripts (e.g., specific questions, summaries, action items, or participant involvement).
 

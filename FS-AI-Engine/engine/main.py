@@ -2,17 +2,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from .core.settings import get_settings
 from .api.routes import router as transcript_router, chat_router
-
-import sys
-from pathlib import Path
-AI_ENGINE_ROOT = Path(__file__).resolve().parent.parent
-if str(AI_ENGINE_ROOT) not in sys.path:
-    sys.path.insert(0, str(AI_ENGINE_ROOT))
-
-try:
-    from api.routers.engine import router as engine_router
-except ModuleNotFoundError:
-    from ..api.routers.engine import router as engine_router
+from .api.routers.engine import router as engine_router
 
 settings = get_settings()
 

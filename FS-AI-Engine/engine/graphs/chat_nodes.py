@@ -35,25 +35,11 @@ AI_ENGINE_ROOT = CURRENT_DIR.parent
 if str(AI_ENGINE_ROOT) not in sys.path:
     sys.path.insert(0, str(AI_ENGINE_ROOT))
 
-try:
-    from engine.core.config import settings
-    from engine.core.database import AsyncSessionLocal
-    from engine.services.embedding_service import EmbeddingService
-    from engine.services.llm_client import OpenRouterClient, get_openrouter_client
-    from services.ingestion_service import format_timestamp, enrich_chunk_text
-except ModuleNotFoundError:
-    try:
-        from core.config import settings
-        from core.database import AsyncSessionLocal
-        from services.embedding_service import EmbeddingService
-        from services.llm_client import OpenRouterClient, get_openrouter_client
-        from services.ingestion_service import format_timestamp, enrich_chunk_text
-    except ModuleNotFoundError:
-        from ..core.config import settings
-        from ..core.database import AsyncSessionLocal
-        from ..services.embedding_service import EmbeddingService
-        from ..services.llm_client import OpenRouterClient, get_openrouter_client
-        from ..services.ingestion_service import format_timestamp, enrich_chunk_text
+from ..core.config import settings
+from ..core.database import AsyncSessionLocal
+from ..services.embedding_service import EmbeddingService
+from ..services.llm_client import OpenRouterClient, get_openrouter_client
+from ..services.ingestion_service import format_timestamp, enrich_chunk_text
 
 # General English grammatical and conversational stop words
 MEETING_STOP_WORDS = {
@@ -384,7 +370,13 @@ async def extract_filters_node(state: ChatState) -> Dict[str, Any]:
     if AsyncSessionLocal is not None:
         async with AsyncSessionLocal() as session:
             # 1. Fetch available meetings and projects from PostgreSQL
-            m_res = await session.execute(text("SELECT id, title, project_id FROM meetings"))
+            if project_id:
+                m_res = await session.execute(
+                    text("SELECT id, title, project_id FROM meetings WHERE project_id = :p_id"),
+                    {"p_id": project_id},
+                )
+            else:
+                m_res = await session.execute(text("SELECT id, title, project_id FROM meetings"))
             meetings_db = m_res.fetchall()
             meetings_dict = {m[0]: (m[1] or m[0]).strip() for m in meetings_db}
             available_meetings = [
@@ -393,21 +385,23 @@ async def extract_filters_node(state: ChatState) -> Dict[str, Any]:
             ]
 
             try:
-                p_res = await session.execute(text("SELECT id, name, status FROM projects"))
-                available_projects = [
-                    {"id": r[0], "name": (r[1] or r[0]).strip(), "status": (r[2] or "ACTIVE")}
-                    for r in p_res.fetchall()
-                ]
+                async with session.begin_nested():
+                    p_res = await session.execute(text("SELECT id, name, status FROM projects"))
+                    available_projects = [
+                        {"id": r[0], "name": (r[1] or r[0]).strip(), "status": (r[2] or "ACTIVE")}
+                        for r in p_res.fetchall()
+                    ]
             except Exception as e:
                 logger.warning(f"[LANGGRAPH: EXTRACT_FILTERS] Could not query projects table: {e}")
 
             if not available_projects:
                 try:
-                    m_p_res = await session.execute(text("SELECT DISTINCT project_id FROM meetings WHERE project_id IS NOT NULL"))
-                    available_projects = [
-                        {"id": r[0], "name": f"Project {r[0]}", "status": "ACTIVE"}
-                        for r in m_p_res.fetchall()
-                    ]
+                    async with session.begin_nested():
+                        m_p_res = await session.execute(text("SELECT DISTINCT project_id FROM meetings WHERE project_id IS NOT NULL"))
+                        available_projects = [
+                            {"id": r[0], "name": f"Project {r[0]}", "status": "ACTIVE"}
+                            for r in m_p_res.fetchall()
+                        ]
                 except Exception:
                     pass
 
