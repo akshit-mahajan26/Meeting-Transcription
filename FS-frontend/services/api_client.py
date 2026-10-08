@@ -142,6 +142,17 @@ class MeetingIntelligenceClient:
                 "citations": []
             }
 
+    def list_projects(self) -> List[str]:
+        """Fetches the list of all distinct project IDs."""
+        try:
+            with httpx.Client(timeout=5.0) as client:
+                res = client.get(f"{self.meetings_api_url}/projects")
+                if res.status_code == 200:
+                    return res.json().get("projects", [])
+        except Exception as e:
+            logger.warning(f"Error fetching projects list: {e}")
+        return []
+
     def list_meetings(self) -> List[Dict[str, Any]]:
         """Fetches the list of all ingested meetings."""
         try:

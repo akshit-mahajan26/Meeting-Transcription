@@ -1,5 +1,5 @@
 import re
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, Union
 from pydantic import BaseModel, Field, field_validator
 
 
@@ -24,6 +24,7 @@ class RawTranscriptPayload(BaseModel):
     title: Optional[str] = Field(default=None, description="Meeting title or subject")
     date: Optional[str] = Field(default=None, description="ISO date string or timestamp of the meeting")
     duration: Optional[float] = Field(default=None, ge=0.0, description="Duration in seconds")
+    summary: Optional[Union[Dict[str, Any], str]] = Field(default=None, description="Optional Fireflies native summary")
     sentences: List[RawSentence] = Field(default_factory=list, description="List of raw transcript sentences")
 
 

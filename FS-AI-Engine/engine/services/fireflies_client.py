@@ -14,6 +14,15 @@ query GetTranscript($transcriptId: String!) {
     date
     duration
     organizer_email
+    summary {
+      keywords
+      action_items
+      outline
+      shorthand_bullet
+      overview
+      bullet_gist
+      gist
+    }
     speakers {
       id
       name
@@ -39,6 +48,15 @@ query GetTranscript($transcriptId: String!) {
     title
     date
     duration
+    summary {
+      keywords
+      action_items
+      outline
+      shorthand_bullet
+      overview
+      bullet_gist
+      gist
+    }
     sentences {
       index
       speaker_name

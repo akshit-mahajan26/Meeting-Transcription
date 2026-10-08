@@ -14,6 +14,15 @@ query GetTranscript($transcriptId: String!) {
     date
     duration
     organizer_email
+    summary {
+      keywords
+      action_items
+      outline
+      shorthand_bullet
+      overview
+      bullet_gist
+      gist
+    }
     speakers {
       id
       name
@@ -173,6 +182,7 @@ class FirefliesClient:
             "title": str(transcript_data.get("title") or f"Meeting {transcript_id}"),
             "date": str(transcript_data.get("date")) if transcript_data.get("date") else None,
             "duration": float(transcript_data.get("duration") or 0.0),
+            "summary": transcript_data.get("summary"),
             "speakers": speakers,
             "sentences": sentences,
             "raw_payload": transcript_data,

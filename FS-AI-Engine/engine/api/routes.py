@@ -1,3 +1,4 @@
+import asyncio
 from typing import Any, Dict, List, Optional, Union
 from fastapi import APIRouter, Depends, HTTPException, status
 from ..models.schemas import (
@@ -144,8 +145,10 @@ async def process_full_pipeline(
     # 2. Level 1 Signal Tagging
     tagged_turns = tagger.tag_turns(norm_result.turns)
 
-    # 3. Level 1 Vector Embedding Generation (1536-dim)
-    if tagged_turns:
+    # 3 & 4. Concurrent Level 1 Embedding Generation & Level 2 Topic Segmentation
+    async def _embed_turns():
+        if not tagged_turns:
+            return
         def _fmt_ts(sec: float) -> str:
             s = max(0, int(round(float(sec or 0.0))))
             return f"{s // 3600:02d}:{(s % 3600) // 60:02d}:{s % 60:02d}"
@@ -163,10 +166,12 @@ async def process_full_pipeline(
             import logging
             logging.getLogger(__name__).error(f"Failed to generate embeddings in process_full_pipeline: {exc}")
 
-    # 4. Level 2 Topic Segmentation
-    segments = segmenter.segment_transcript(
-        meeting_id=payload.meeting_id,
-        turns=tagged_turns,
+    _, segments = await asyncio.gather(
+        _embed_turns(),
+        segmenter.segment_transcript_async(
+            meeting_id=payload.meeting_id,
+            turns=tagged_turns,
+        ),
     )
 
     # 5. Level 3 Meeting Intelligence Extraction
@@ -244,12 +249,12 @@ def tag_signals_endpoint(
     summary="Group Level 1 turns into Level 2 Topic Segments",
     description="Executes hybrid boundary detection with similarity guardrails and tangent protection.",
 )
-def segment_topics_endpoint(
+async def segment_topics_endpoint(
     request: SegmentTopicsRequest,
     segmenter: TopicSegmenter = Depends(get_topic_segmenter),
 ) -> List[TopicSegment]:
     """Thin handler delegating topic segmentation to TopicSegmenter service."""
-    return segmenter.segment_transcript(
+    return await segmenter.segment_transcript_async(
         meeting_id=request.meeting_id,
         turns=request.turns,
         similarity_threshold_override=request.similarity_threshold,

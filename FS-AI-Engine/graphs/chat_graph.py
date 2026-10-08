@@ -52,9 +52,13 @@ logger = logging.getLogger("fs-ai-engine.chat_graph")
 
 def route_after_retrieval(state: ChatState) -> str:
     """
-    Evaluates whether relevant vector matches were retrieved from pgvector.
-    Routes to LLM synthesis if candidate turns exist, or fallback otherwise.
+    Evaluates whether relevant vector matches or verified catalog/relational records exist.
+    Routes to LLM synthesis if candidate turns, catalog records, or involvement records exist, or fallback otherwise.
     """
+    if state.get("query_intent") == "catalog":
+        return "llm_synthesis"
+    if state.get("relevant_meetings"):
+        return "llm_synthesis"
     chunks = state.get("retrieved_chunks", [])
     if chunks and len(chunks) > 0:
         return "llm_synthesis"

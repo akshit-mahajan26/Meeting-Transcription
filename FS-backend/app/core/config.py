@@ -46,6 +46,11 @@ class Settings(BaseSettings):
         default="http://localhost:8001",
         validation_alias=AliasChoices("AI_ENGINE_URL", "ai_engine_url"),
     )
+    ai_engine_timeout_seconds: float = Field(
+        default=300.0,
+        validation_alias=AliasChoices("AI_ENGINE_TIMEOUT_SECONDS", "ai_engine_timeout_seconds"),
+        description="Timeout in seconds when communicating with FS-AI-Engine for deep processing",
+    )
 
     # Gemini parameters
     gemini_api_key: Optional[str] = Field(
@@ -86,6 +91,13 @@ class Settings(BaseSettings):
     @property
     def AI_ENGINE_URL(self) -> str:
         return self.ai_engine_url
+
+    @field_validator("database_url", mode="before")
+    @classmethod
+    def assemble_database_url(cls, v: str) -> str:
+        if isinstance(v, str) and v.startswith("postgres://"):
+            return v.replace("postgres://", "postgresql://", 1)
+        return v
 
     @field_validator("cors_origins", mode="before")
     @classmethod

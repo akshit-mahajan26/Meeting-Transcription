@@ -1,9 +1,14 @@
 import re
 import math
+import asyncio
+import logging
 from typing import List, Dict, Optional, Tuple, Set
 from collections import Counter
 from ..core.settings import get_settings, Settings
 from ..models.schemas import SpeakerTurn, TopicSegment
+from .llm_client import OpenRouterClient, openrouter_client
+
+logger = logging.getLogger(__name__)
 
 
 # Standard English stopwords to filter during lexical vectorization
@@ -39,14 +44,17 @@ class TopicSegmenter:
     2. Identifies candidate boundaries where topic similarity drops.
     3. Confirms boundary intent, suppressing splits on short counter-questions or momentary tangents.
     4. Enforces segment size bounds (min_turns_per_segment, max_turns_per_segment).
-    5. Produces validated TopicSegment models conforming to mtg_<id>_seg_<NN>.
+    5. Leverages LLM to synthesize concise, informative 5-to-6 word executive headings for each topic.
+    6. Produces validated TopicSegment models conforming to mtg_<id>_seg_<NN>.
     """
 
-    def __init__(self, settings: Optional[Settings] = None):
+    def __init__(self, settings: Optional[Settings] = None, llm_client: Optional[OpenRouterClient] = None):
         self.settings = settings or get_settings()
+        self.llm_client = llm_client or openrouter_client
         self.similarity_threshold = self.settings.topic_similarity_threshold
         self.min_turns = self.settings.min_turns_per_segment
         self.max_turns = self.settings.max_turns_per_segment
+        self.llm_model = getattr(self.settings, "LLM_MODEL_NAME", None) or getattr(self.settings, "llm_model", "gemini-2.5-flash")
 
     @staticmethod
     def _tokenize(text: str) -> List[str]:
@@ -200,6 +208,101 @@ class TopicSegmenter:
 
         return segments
 
+    async def segment_transcript_async(
+        self,
+        meeting_id: str,
+        turns: List[SpeakerTurn],
+        similarity_threshold_override: Optional[float] = None,
+        min_turns_override: Optional[int] = None,
+        max_turns_override: Optional[int] = None,
+    ) -> List[TopicSegment]:
+        """
+        Asynchronously segment turns into cohesive Level 2 topic segments with LLM-generated executive headings.
+        """
+        if not turns:
+            return []
+
+        threshold = similarity_threshold_override if similarity_threshold_override is not None else self.similarity_threshold
+        min_turns = min_turns_override if min_turns_override is not None else self.min_turns
+        max_turns = max_turns_override if max_turns_override is not None else self.max_turns
+
+        if len(turns) <= min_turns:
+            return [await self._build_segment_async(meeting_id, 1, turns, confidence=1.0)]
+
+        turn_tokens = [self._tokenize(t.text) for t in turns]
+
+        boundary_scores: List[float] = []
+        for i in range(len(turns) - 1):
+            left_window_tokens = []
+            for j in range(max(0, i - 1), i + 1):
+                left_window_tokens.extend(turn_tokens[j])
+
+            right_window_tokens = []
+            for j in range(i + 1, min(len(turns), i + 3)):
+                right_window_tokens.extend(turn_tokens[j])
+
+            sim = self._compute_cosine_similarity(left_window_tokens, right_window_tokens)
+            boundary_scores.append(sim)
+
+        cut_indices: List[int] = []
+        last_cut = 0
+
+        for i in range(len(boundary_scores)):
+            turns_in_current = (i + 1) - last_cut
+            similarity = boundary_scores[i]
+            is_candidate_shift = similarity < threshold
+
+            if turns_in_current < min_turns:
+                continue
+
+            if turns_in_current >= max_turns:
+                cut_indices.append(i + 1)
+                last_cut = i + 1
+                continue
+
+            if is_candidate_shift:
+                if self._is_short_tangent(turns, i + 1):
+                    continue
+                else:
+                    cut_indices.append(i + 1)
+                    last_cut = i + 1
+
+        # Collect segment boundaries and turn slices
+        segment_defs = []
+        start_idx = 0
+        seg_counter = 1
+
+        for cut_idx in cut_indices:
+            seg_turns = turns[start_idx:cut_idx]
+            if seg_turns:
+                conf = round(1.0 - (boundary_scores[cut_idx - 1] if cut_idx - 1 < len(boundary_scores) else 0.5), 2)
+                segment_defs.append((seg_counter, seg_turns, conf))
+                seg_counter += 1
+            start_idx = cut_idx
+
+        if start_idx < len(turns):
+            trailing_turns = turns[start_idx:]
+            if len(trailing_turns) < min_turns and segment_defs:
+                last_idx, last_turns, last_conf = segment_defs[-1]
+                combined = last_turns + trailing_turns
+                segment_defs[-1] = (last_idx, combined, last_conf)
+            else:
+                segment_defs.append((seg_counter, trailing_turns, 0.85))
+
+        # Build segments concurrently with bounded semaphore (6 workers) for high throughput
+        sem = asyncio.Semaphore(6)
+
+        async def _build_bounded(s_idx: int, s_turns: List[SpeakerTurn], s_conf: float) -> TopicSegment:
+            async with sem:
+                return await self._build_segment_async(meeting_id, s_idx, s_turns, confidence=s_conf)
+
+        segments = await asyncio.gather(*[
+            _build_bounded(s_idx, s_turns, s_conf)
+            for s_idx, s_turns, s_conf in segment_defs
+        ])
+
+        return list(segments)
+
     def _build_segment(
         self,
         meeting_id: str,
@@ -207,7 +310,7 @@ class TopicSegmenter:
         segment_turns: List[SpeakerTurn],
         confidence: float = 1.0,
     ) -> TopicSegment:
-        """Construct a validated TopicSegment conforming to mtg_<id>_seg_<NN>."""
+        """Construct a validated TopicSegment conforming to mtg_<id>_seg_<NN> (Synchronous version)."""
         clean_meeting_id = re.sub(r"[^a-zA-Z0-9_\-]", "_", meeting_id.strip())
         segment_id = f"mtg_{clean_meeting_id}_seg_{segment_index:02d}"
 
@@ -234,18 +337,119 @@ class TopicSegmenter:
             boundary_confidence=max(0.1, min(1.0, confidence)),
         )
 
+    async def _build_segment_async(
+        self,
+        meeting_id: str,
+        segment_index: int,
+        segment_turns: List[SpeakerTurn],
+        confidence: float = 1.0,
+    ) -> TopicSegment:
+        """Construct a validated TopicSegment with async LLM heading generation."""
+        clean_meeting_id = re.sub(r"[^a-zA-Z0-9_\-]", "_", meeting_id.strip())
+        segment_id = f"mtg_{clean_meeting_id}_seg_{segment_index:02d}"
+
+        start_time = round(min(t.start_time for t in segment_turns), 2)
+        end_time = round(max(t.end_time for t in segment_turns), 2)
+        duration = round(max(0.0, end_time - start_time), 2)
+
+        key_speakers = list(dict.fromkeys(t.speaker_name for t in segment_turns))
+        title = await self._generate_title_async(segment_turns)
+        summary = self._generate_summary(segment_turns)
+
+        return TopicSegment(
+            segment_id=segment_id,
+            meeting_id=meeting_id,
+            segment_index=segment_index,
+            title=title,
+            topic_summary=summary,
+            turn_ids=[t.turn_id for t in segment_turns],
+            start_time=start_time,
+            end_time=end_time,
+            duration=duration,
+            turns_count=len(segment_turns),
+            key_speakers=key_speakers,
+            boundary_confidence=max(0.1, min(1.0, confidence)),
+        )
+
+    async def _generate_title_async(self, turns: List[SpeakerTurn]) -> str:
+        """
+        Synthesize an understandable, executive-level 5-to-6 word topic heading summarizing the discussion.
+        """
+        sample_text = "\n".join([f"{t.speaker_name}: {t.text}" for t in turns])[:1000]
+        prompt = (
+            "You are an executive meeting analyst. Analyze the following meeting dialogue excerpt and generate "
+            "an understandable, professional 5-to-6 word topic heading that describes what was discussed.\n\n"
+            "STRICT RULES:\n"
+            "1. Length: Exactly 5 to 6 words.\n"
+            "2. Quality: Must convey a clear, meaningful business or technical topic (e.g., "
+            "'Implementing Hybrid Search And Database Caching', 'Resolving Staging Contention And Timeout Errors', "
+            "'Reviewing Frontend UI Migration And Roadmap').\n"
+            "3. Format: Return ONLY the title itself. Do NOT include quotes, prefixes like 'Topic:', "
+            "or generic suffixes like 'Discussion' or 'Chapter'.\n"
+            "4. Forbidden: NEVER use vague word lists like 'Word & Word & Word'.\n\n"
+            f"Meeting Excerpt:\n{sample_text}\n\n"
+            "Topic Heading:"
+        )
+        try:
+            raw_title = await asyncio.wait_for(
+                self.llm_client.generate_chat_completion(
+                    messages=[{"role": "user", "content": prompt}],
+                    model=self.llm_model,
+                    max_tokens=30,
+                    temperature=0.2,
+                ),
+                timeout=10.0,
+            )
+            cleaned = raw_title.strip().strip('"').strip("'").strip()
+            cleaned = re.sub(r"^(Topic Heading|Title|Topic|Chapter):\s*", "", cleaned, flags=re.IGNORECASE).strip()
+            cleaned = cleaned.strip('"').strip("'").strip(".").strip()
+            words = cleaned.split()
+            if 3 <= len(words) <= 10:
+                if len(words) > 6:
+                    cleaned = " ".join(words[:6])
+                return cleaned
+        except Exception as exc:
+            logger.warning(f"LLM topic title generation failed ({exc}). Using heuristic summary title.")
+
+        return self._generate_fallback_title(turns)
+
     def _generate_title(self, turns: List[SpeakerTurn]) -> str:
-        """Synthesize a concise headline based on salient terms in this segment."""
+        """Synchronous wrapper for generating topic heading."""
+        # Check if running within an event loop
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = None
+
+        if loop and loop.is_running():
+            # In an active loop, use heuristic fallback to avoid blocking
+            return self._generate_fallback_title(turns)
+        else:
+            try:
+                return asyncio.run(self._generate_title_async(turns))
+            except Exception:
+                return self._generate_fallback_title(turns)
+
+    def _generate_fallback_title(self, turns: List[SpeakerTurn]) -> str:
+        """Generate a meaningful 5-to-6 word descriptive heading without vague 'X & Y & Z' formatting."""
+        # Find first substantive turn with an action, commitment, or blocker
+        for t in turns:
+            if getattr(t, "is_blocker", False) or getattr(t, "is_commitment", False) or len(t.text.split()) >= 6:
+                words = re.findall(r"\b[A-Za-z0-9\-_]{3,}\b", t.text)
+                meaningful = [w.capitalize() for w in words if w.lower() not in STOPWORDS]
+                if len(meaningful) >= 4:
+                    action = "Addressing" if getattr(t, "is_blocker", False) else ("Planning" if getattr(t, "is_commitment", False) else "Reviewing")
+                    return f"{action} {' '.join(meaningful[:5])}"
+
+        # Default fallback from most salient terms
         tokens = []
         for t in turns:
             tokens.extend(self._tokenize(t.text))
-
-        if not tokens:
-            return f"Topic Discussion (Turns {turns[0].turn_number}-{turns[-1].turn_number})"
-
         counts = Counter(tokens)
-        top_terms = [word.capitalize() for word, _ in counts.most_common(3)]
-        return f"{' & '.join(top_terms)} Discussion"
+        top = [w.capitalize() for w, _ in counts.most_common(5) if w.lower() not in STOPWORDS]
+        if top:
+            return f"Discussion On {' '.join(top[:4])}"
+        return f"Meeting Discussion For Turns {turns[0].turn_number} To {turns[-1].turn_number}"
 
     def _generate_summary(self, turns: List[SpeakerTurn]) -> str:
         """Synthesize an informative summary for the topic segment."""

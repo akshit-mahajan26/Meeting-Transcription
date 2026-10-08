@@ -184,12 +184,19 @@ class MeetingService:
         title = norm_data.get("title")
         date_str = norm_data.get("date")
         duration = norm_data.get("duration")
+        summary = (
+            norm_data.get("summary")
+            or norm_data.get("executive_summary")
+            or (norm_data.get("level3_summary") or {}).get("overview")
+            or ""
+        )
 
         meeting = self.db.query(MeetingModel).filter(MeetingModel.id == meeting_id).first()
         if not meeting:
             meeting = MeetingModel(
                 id=meeting_id,
                 title=title,
+                summary=summary,
                 date=date_str,
                 duration=duration,
                 status="PROCESSED",
@@ -198,6 +205,8 @@ class MeetingService:
             self.db.flush()
         else:
             meeting.title = title or meeting.title
+            if summary:
+                meeting.summary = summary
             meeting.date = date_str or meeting.date
             meeting.duration = duration or meeting.duration
             meeting.status = "PROCESSED"
@@ -296,14 +305,27 @@ class MeetingService:
                 MeetingSummary(
                     id=m.id,
                     title=m.title or f"Meeting {m.id}",
+                    summary=m.summary,
                     date=m.date,
                     duration=m.duration,
                     status=m.status,
+                    project_id=m.project_id,
                     total_turns=turn_count,
                     created_at=m.created_at,
                 )
             )
         return summaries
+
+    def list_projects(self) -> List[str]:
+        """Fetches distinct project identifiers across projects and meetings tables."""
+        from ..core.database import ProjectModel
+        proj_ids = {p.id for p in self.db.query(ProjectModel).all() if p.id}
+        mtg_proj_ids = {
+            m.project_id for m in self.db.query(MeetingModel).filter(MeetingModel.project_id.isnot(None)).all()
+            if m.project_id
+        }
+        all_ids = proj_ids.union(mtg_proj_ids)
+        return sorted([pid for pid in all_ids if pid and pid.strip()])
 
     def get_meeting_by_id(self, meeting_id: str) -> MeetingResponse:
         meeting = self.db.query(MeetingModel).filter(MeetingModel.id == meeting_id).first()
@@ -342,9 +364,11 @@ class MeetingService:
         return MeetingResponse(
             id=meeting.id,
             title=meeting.title or f"Meeting {meeting.id}",
+            summary=meeting.summary,
             date=meeting.date,
             duration=meeting.duration,
             status=meeting.status,
+            project_id=meeting.project_id,
             total_turns=len(turn_responses),
             created_at=meeting.created_at,
             updated_at=meeting.updated_at,

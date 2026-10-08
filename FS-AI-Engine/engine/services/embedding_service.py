@@ -1,3 +1,4 @@
+import asyncio
 import math
 import hashlib
 import logging
@@ -73,24 +74,32 @@ class EmbeddingService:
         if self.client:
             try:
                 batch_size = 50
+                batches = [
+                    sanitized_texts[i : i + batch_size]
+                    for i in range(0, len(sanitized_texts), batch_size)
+                ]
+
+                emb_sem = asyncio.Semaphore(4)
+
+                async def _fetch_batch(batch_slice: List[str]) -> List[List[float]]:
+                    async with emb_sem:
+                        kwargs = {
+                            "input": batch_slice,
+                            "model": self.model,
+                            "dimensions": self.dimensions,
+                        }
+                        try:
+                            resp = await self.client.embeddings.create(**kwargs)
+                        except Exception:
+                            # Retry without dimensions parameter if rejected by certain endpoints
+                            kwargs.pop("dimensions", None)
+                            resp = await self.client.embeddings.create(**kwargs)
+                        return [item.embedding for item in resp.data]
+
+                batch_results = await asyncio.gather(*[_fetch_batch(b) for b in batches])
                 all_embeddings: List[List[float]] = []
-                for i in range(0, len(sanitized_texts), batch_size):
-                    batch = sanitized_texts[i : i + batch_size]
-                    kwargs = {
-                        "input": batch,
-                        "model": self.model,
-                        "dimensions": self.dimensions,
-                    }
-
-                    try:
-                        response = await self.client.embeddings.create(**kwargs)
-                    except Exception:
-                        # Retry without dimensions parameter if rejected by certain endpoints
-                        kwargs.pop("dimensions", None)
-                        response = await self.client.embeddings.create(**kwargs)
-
-                    batch_embeddings = [item.embedding for item in response.data]
-                    all_embeddings.extend(batch_embeddings)
+                for br in batch_results:
+                    all_embeddings.extend(br)
 
                 # Check or pad/truncate dimensions to match database schema
                 for idx, emb in enumerate(all_embeddings):

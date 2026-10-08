@@ -55,12 +55,15 @@ class BackendPipelineOrchestrator:
         target_url = f"{self.ai_engine_url}/api/v1/transcript/process-full"
         fallback_url = f"{self.ai_engine_url}/api/v1/transcript/normalize"
 
+        timeout_sec = float(getattr(self.settings, "ai_engine_timeout_seconds", 300.0))
+        request_timeout = httpx.Timeout(connect=15.0, read=timeout_sec, write=30.0, pool=30.0)
+
         attempt = 0
         backoff = initial_backoff
         while attempt < max_retries:
             attempt += 1
             try:
-                async with httpx.AsyncClient(timeout=60.0) as client:
+                async with httpx.AsyncClient(timeout=request_timeout) as client:
                     resp = await client.post(target_url, json=payload)
                     if resp.status_code == 404:
                         # Fallback to normalize endpoint if process-full is not mounted
@@ -82,11 +85,14 @@ class BackendPipelineOrchestrator:
                 return resp.json()
 
             except (httpx.TimeoutException, httpx.RequestError) as exc:
+                err_detail = f"Timeout ({timeout_sec}s exceeded)" if isinstance(exc, httpx.TimeoutException) else str(exc)
                 if attempt >= max_retries:
                     raise PipelineOrchestratorError(
-                        f"Failed to communicate with FS-AI-Engine after {max_retries} attempts: {str(exc)}"
+                        f"Failed to communicate with FS-AI-Engine after {max_retries} attempts: {err_detail}"
                     ) from exc
-                logger.warning(f"Network error contacting FS-AI-Engine (attempt {attempt}/{max_retries}): {exc}. Retrying in {backoff}s...")
+                logger.warning(
+                    f"Network error contacting FS-AI-Engine (attempt {attempt}/{max_retries}): {err_detail}. Retrying in {backoff}s..."
+                )
                 await asyncio.sleep(backoff)
                 backoff *= 2.0
 
@@ -95,7 +101,7 @@ class BackendPipelineOrchestrator:
     async def orchestrate_meeting_ingestion(
         self,
         transcript_dict: Dict[str, Any],
-        project_id: Optional[str] = "proj-fireflies-ai",
+        project_id: Optional[str] = None,
         custom_title: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
@@ -164,6 +170,7 @@ class BackendPipelineOrchestrator:
             "title": title,
             "date": date_str,
             "duration": duration,
+            "summary": transcript_dict.get("summary"),
             "sentences": sanitized_sentences,
         }
 
@@ -173,11 +180,31 @@ class BackendPipelineOrchestrator:
         level1_turns = ai_response.get("level1_turns") or ai_response.get("turns") or []
         level2_segments = ai_response.get("level2_segments") or ai_response.get("topics") or []
         level3_summary = ai_response.get("level3_summary") or {}
-        summary_text = (
-            level3_summary.get("executive_overview")
+
+        # 1. AI Engine Level 3 intelligence overview (schema key: overview)
+        ai_summary_text = (
+            level3_summary.get("overview")
+            or level3_summary.get("executive_overview")
             or ai_response.get("executive_summary")
             or ""
-        )
+        ).strip()
+
+        # 2. Fireflies native transcript summary
+        ff_summary_raw = transcript_dict.get("summary")
+        ff_summary_text = ""
+        if isinstance(ff_summary_raw, dict):
+            ff_summary_text = (
+                ff_summary_raw.get("overview")
+                or ff_summary_raw.get("shorthand_bullet")
+                or ff_summary_raw.get("bullet_gist")
+                or ff_summary_raw.get("gist")
+                or ""
+            ).strip()
+        elif isinstance(ff_summary_raw, str):
+            ff_summary_text = ff_summary_raw.strip()
+
+        # Prioritize Fireflies overview, fallback to AI Engine summary
+        summary_text = ff_summary_text or ai_summary_text or ""
 
         # 4. Atomic 4-Tier Database Upsert
         db = SessionLocal()

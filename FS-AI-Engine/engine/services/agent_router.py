@@ -134,14 +134,11 @@ class AgentRouter:
 
         detected_project = explicit_project_id
         if not detected_project:
-            if "fireflies" in lower_q:
-                detected_project = "proj-fireflies-ai"
-            else:
-                proj_match = re.search(r"\bproject[- ]([a-zA-Z0-9_\-]+)\b", query, re.IGNORECASE)
-                if proj_match and proj_match.group(1).lower() not in {
-                    "status", "health", "overview", "summary", "plan", "update", "roadmap", "progress"
-                }:
-                    detected_project = f"proj-{proj_match.group(1).lower()}"
+            proj_match = re.search(r"\bproject[- ]([a-zA-Z0-9_\-]+)\b", query, re.IGNORECASE)
+            if proj_match and proj_match.group(1).lower() not in {
+                "status", "health", "overview", "summary", "plan", "update", "roadmap", "progress"
+            }:
+                detected_project = f"proj-{proj_match.group(1).lower()}"
 
         detected_topic = None
         if any(w in lower_q for w in ["database", "postgres", "checkpointer", "persistence"]):

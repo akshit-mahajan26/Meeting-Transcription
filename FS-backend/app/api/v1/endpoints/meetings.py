@@ -8,6 +8,7 @@ from ....core.security import verify_hmac_sha256_signature
 from ....schemas.models import (
     MeetingResponse,
     MeetingListResponse,
+    ProjectListResponse,
     SpeakerTurnResponse,
     RawTranscriptIngestRequest,
     FetchMeetingIngestRequest,
@@ -113,6 +114,21 @@ def list_meetings(
     """Thin route handler returning summaries of all meetings."""
     summaries = service.list_meetings()
     return MeetingListResponse(total=len(summaries), meetings=summaries)
+
+
+@router.get(
+    "/projects",
+    response_model=ProjectListResponse,
+    status_code=status.HTTP_200_OK,
+    summary="List all distinct projects",
+    description="Returns a list of all existing project IDs for organization and ingestion selection.",
+)
+def list_projects(
+    service: MeetingService = Depends(get_meeting_service),
+) -> ProjectListResponse:
+    """Returns all known project identifiers across meetings and projects."""
+    projects = service.list_projects()
+    return ProjectListResponse(total=len(projects), projects=projects)
 
 
 @router.get(

@@ -18,7 +18,7 @@ SUPPORTED_MEDIA_EXTENSIONS = (".mp3", ".mp4", ".wav", ".m4a", ".aac", ".ogg", ".
 class IngestLinkRequest(BaseModel):
     """Request body for asynchronous meeting link ingestion."""
     link: HttpUrl = Field(..., description="Fireflies dashboard view link or public audio/video file link")
-    project_id: Optional[str] = Field(default="proj-fireflies-ai", description="Parent project identifier")
+    project_id: Optional[str] = Field(default=None, description="Parent project identifier")
     title: Optional[str] = Field(default=None, description="Optional custom title for the meeting")
 
 

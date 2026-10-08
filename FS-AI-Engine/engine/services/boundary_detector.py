@@ -206,28 +206,55 @@ class SemanticBoundaryDetector:
         )
 
     async def _generate_chapter_title(self, segment_turns: List[SpeakerTurn]) -> str:
-        """Generate a concise chapter title for the topic segment using OpenRouter."""
-        sample_text = " ".join([t.text for t in segment_turns])[:500]
-        prompt = f"Generate a concise 3-to-6 word chapter title for this meeting excerpt:\n\"{sample_text}\"\nTitle:"
+        """Generate an understandable, executive-level 5-to-6 word topic heading using OpenRouter."""
+        sample_text = "\n".join([f"{t.speaker_name}: {t.text}" for t in segment_turns])[:1000]
+        prompt = (
+            "You are an executive meeting analyst. Analyze the following meeting dialogue excerpt and generate "
+            "an understandable, professional 5-to-6 word topic heading that describes what was discussed.\n\n"
+            "STRICT RULES:\n"
+            "1. Length: Exactly 5 to 6 words.\n"
+            "2. Quality: Must convey a clear, meaningful business or technical topic (e.g., "
+            "'Implementing Hybrid Search And Database Caching', 'Resolving Staging Contention And Timeout Errors', "
+            "'Reviewing Frontend UI Migration And Roadmap').\n"
+            "3. Format: Return ONLY the title itself. Do NOT include quotes, prefixes like 'Topic:', "
+            "or generic suffixes like 'Discussion' or 'Chapter'.\n"
+            "4. Forbidden: NEVER use vague word lists like 'Word & Word & Word'.\n\n"
+            f"Meeting Excerpt:\n{sample_text}\n\n"
+            "Topic Heading:"
+        )
         try:
             title = await self.llm_client.generate_chat_completion(
                 messages=[{"role": "user", "content": prompt}],
                 model=self.llm_model,
-                max_tokens=15,
+                max_tokens=30,
                 temperature=self.config.llm_temperature,
             )
-            cleaned_title = title.strip().strip('"').strip("'")
-            if cleaned_title and len(cleaned_title) > 2:
+            cleaned_title = title.strip().strip('"').strip("'").strip()
+            cleaned_title = re.sub(r"^(Topic Heading|Title|Topic|Chapter):\s*", "", cleaned_title, flags=re.IGNORECASE).strip()
+            cleaned_title = cleaned_title.strip('"').strip("'").strip(".").strip()
+            words = cleaned_title.split()
+            if 3 <= len(words) <= 10:
+                if len(words) > 6:
+                    cleaned_title = " ".join(words[:6])
                 return cleaned_title
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning(f"LLM chapter title generation failed ({exc}). Using heuristic fallback.")
 
         # Heuristic title fallback
+        for t in segment_turns:
+            if getattr(t, "is_blocker", False) or getattr(t, "is_commitment", False) or len(t.text.split()) >= 6:
+                words = re.findall(r"\b[A-Za-z0-9\-_]{3,}\b", t.text)
+                stopwords = {"that", "this", "with", "have", "from", "will", "they", "what", "about", "yeah", "okay", "like"}
+                meaningful = [w.capitalize() for w in words if w.lower() not in stopwords]
+                if len(meaningful) >= 4:
+                    action = "Addressing" if getattr(t, "is_blocker", False) else ("Planning" if getattr(t, "is_commitment", False) else "Reviewing")
+                    return f"{action} {' '.join(meaningful[:5])}"
+
         all_words = re.findall(r"\b[A-Za-z]{4,}\b", " ".join(t.text for t in segment_turns))
-        stopwords = {"that", "this", "with", "have", "from", "will", "they", "what", "about"}
+        stopwords = {"that", "this", "with", "have", "from", "will", "they", "what", "about", "yeah", "okay"}
         salient = [w.capitalize() for w in all_words if w.lower() not in stopwords]
-        top = salient[:3] if salient else ["Discussion"]
-        return f"{' & '.join(top)} Chapter"
+        top = salient[:5] if salient else ["Discussion"]
+        return f"Discussion On {' '.join(top[:4])}"
 
     async def _compile_executive_summary(
         self,

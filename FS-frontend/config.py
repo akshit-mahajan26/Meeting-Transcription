@@ -33,7 +33,7 @@ class FrontendConfig(BaseSettings):
         description="Favicon and header emoji"
     )
     DEFAULT_PROJECT_ID: str = Field(
-        default="proj-fireflies-ai",
+        default="",
         description="Default enterprise project ID filter"
     )
     REQUEST_TIMEOUT: float = Field(

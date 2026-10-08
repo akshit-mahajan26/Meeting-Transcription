@@ -135,6 +135,15 @@ class SpeakerTurnModel(Base):
 
 def init_db() -> None:
     """Initialize database tables for all 4 tiers and run lightweight auto-migrations."""
+    # Ensure vector extension is enabled in PostgreSQL before table creation
+    try:
+        from sqlalchemy import text
+        with engine.connect() as conn:
+            conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
+            conn.commit()
+    except Exception:
+        pass
+
     Base.metadata.create_all(bind=engine)
 
     # Lightweight auto-migration for newly added columns across tiers

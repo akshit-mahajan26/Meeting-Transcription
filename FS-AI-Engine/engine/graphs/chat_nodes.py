@@ -4,7 +4,7 @@ FS-AI-Engine/graphs/chat_nodes.py
 LangGraph Nodes for the Dedicated AI Engine Chatbot Pipeline.
 
 Implements the modular node functions executed within the ChatState StateGraph:
-1. extract_filters_node: Dynamically resolves participant names and meeting boundaries from DB records.
+1. extract_filters_node: Dynamically resolves participant names, meeting boundaries, and query intent (catalog vs participant involvement vs content Q&A) from DB records.
 2. embed_query_node: Generates 1536-dimensional query vector embeddings.
 3. vector_retrieval_node: Executes PostgreSQL pgvector cosine similarity search with metadata filtering.
 4. llm_synthesis_node: Synthesizes conversational response using OpenRouter LLM.
@@ -55,6 +55,7 @@ except ModuleNotFoundError:
         from ..services.llm_client import OpenRouterClient, get_openrouter_client
         from ..services.ingestion_service import format_timestamp, enrich_chunk_text
 
+# General English grammatical and conversational stop words
 MEETING_STOP_WORDS = {
     "and", "or", "the", "in", "on", "at", "to", "for", "of", "with", "by", "from",
     "about", "into", "through", "after", "before", "between", "under", "above",
@@ -70,18 +71,48 @@ MEETING_STOP_WORDS = {
     "hello", "hi", "hey", "direct", "test"
 }
 
-GENERIC_SPEAKER_WORDS = {
-    "unknown", "speaker", "system", "user", "bot", "assistant"
+# Common organizational roles, titles, departments, and generic system nouns.
+# In corporate meeting environments, these words denote roles/topics rather than unique individuals.
+# Single-token matching is strictly forbidden on these words to prevent query hijacking.
+ORGANIZATIONAL_COMMON_WORDS = {
+    # System and generic placeholder terms
+    "unknown", "speaker", "speakers", "system", "user", "users", "bot", "assistant",
+    "participant", "participants", "member", "members", "team", "teams", "guest", "guests",
+    "host", "hosts", "moderator", "scribe", "audience",
+    # Professional titles and organizational roles
+    "project", "projects", "manager", "managers", "management", "lead", "leads",
+    "head", "director", "directors", "officer", "officers", "vp", "president",
+    "engineer", "engineers", "engineering", "developer", "developers", "designer", "designers",
+    "architect", "architects", "analyst", "analysts", "consultant", "consultants",
+    "specialist", "specialists", "coordinator", "coordinators", "representative", "representatives",
+    "rep", "reps", "executive", "executives", "tester", "testers", "qa", "admin", "administrator",
+    "associate", "associates", "intern", "interns", "agent", "agents", "support",
+    # Organizational functions, departments & business domains
+    "product", "products", "security", "sales", "marketing", "finance", "legal",
+    "operations", "devops", "hr", "account", "accounts", "billing", "cloud",
+    # Entity nouns
+    "meeting", "meetings", "call", "calls", "session", "sessions", "standup",
+    "review", "discussion", "discussions", "sync", "topic", "topics", "agenda",
+    "transcript", "transcripts", "item", "items", "action", "actions"
 }
 
 STOP_WORDS = MEETING_STOP_WORDS
 
-UNIVERSAL_RAG_SYSTEM_PROMPT = """You are an expert Meeting Intelligence Assistant. Your primary goal is to provide clear, professional, and conversational answers to *any* user query regarding ingested meeting transcripts (e.g., specific questions, summaries, action items, or participant involvement).
+
+class QueryIntent:
+    """Semantic intent classification categories for conversational routing."""
+    CATALOG = "catalog"                         # Schema/inventory queries (projects, meetings, participants, topics, statuses, counts)
+    PARTICIPANT_INVOLVEMENT = "participant_involvement" # Which meetings a participant attended or took part in
+    CONTENT_QA = "content_qa"                   # Substantive questions about meeting discussions, decisions, action items, or transcripts
+
+
+UNIVERSAL_RAG_SYSTEM_PROMPT = """You are an expert Meeting Intelligence Assistant. Your primary goal is to provide clear, professional, and conversational answers to *any* user query regarding ingested meeting transcripts, catalog records, and project metadata.
 
 Guidelines:
 1. **Conversational Synthesis:** Answer the user's question directly, clearly, and naturally in the main response body. Never dump raw transcript blocks, speaker headers, or timestamps into the text response.
-2. **Participant Involvement & Meetings:** When asked to list meetings or about who was involved, explicitly name the meeting title(s) and meeting ID(s) based on the verified database records and excerpts.
-3. **Strict Grounding:** Base your response on the provided context, transcript excerpts, and database records. When the user asks to list all meetings or available meetings, enumerate all meetings documented in the database records. If information is missing from the context, state clearly that the records do not contain it."""
+2. **Catalog & Inventory Queries:** When asked about system entities (projects, meetings, participants, topics, statuses, counts), ground your answer directly and strictly in the verified database catalog records provided. State names, IDs, statuses, and counts accurately.
+3. **Participant Involvement & Meetings:** When asked to list meetings or about who was involved, explicitly name the meeting title(s) and meeting ID(s) based on the verified database records and excerpts.
+4. **Strict Grounding:** Base your response on the provided context, transcript excerpts, and database records. If information is missing from the context, state clearly that the records do not contain it."""
 
 
 def is_name_token_match(token: str, candidate: str) -> bool:
@@ -91,7 +122,7 @@ def is_name_token_match(token: str, candidate: str) -> bool:
     if t == c:
         return True
     if len(t) >= 5 and len(c) >= 5:
-        if difflib.SequenceMatcher(None, t, c).ratio() >= 0.82:
+        if difflib.SequenceMatcher(None, t, c).ratio() >= 0.85:
             return True
     return False
 
@@ -102,12 +133,16 @@ def resolve_speakers_from_query(
     meeting_tokens: Optional[Set[str]] = None,
 ) -> List[Tuple[str, str, str]]:
     """
-    Identifies all specific participants dynamically mentioned in the query.
-    Extracts participants directly from PostgreSQL speaker_turns and metadata.
+    Identifies participants dynamically and generically mentioned in the query.
+    Distinguishes proper personal names from generic roles and titles:
+    1. Full normalized name match against complete multi-token identifiers.
+    2. Compound multi-word role/title phrase matching across adjacent tokens.
+    3. Distinctive proper name token matching with common organizational terms filtered.
+    Suppresses single-token false-positive matches on common organizational vocabulary.
     Returns a list of (resolved_speaker, matched_token, reasoning_log).
     """
     q_lower = query.lower()
-    q_words = re.findall(r"[a-zA-Z]+", q_lower)
+    q_words = set(re.findall(r"[a-zA-Z0-9]+", q_lower))
     found_speakers: List[Tuple[str, str, str]] = []
     seen = set()
 
@@ -115,33 +150,48 @@ def resolve_speakers_from_query(
         spk_clean = spk.strip()
         if not spk_clean:
             continue
-        # Remove trailing database generated UUIDs or hash IDs if present
+        # Remove trailing database generated UUIDs, Slack user IDs, or hash IDs if present
         clean_name = re.sub(r"\b[A-Z0-9_]{10,}\b", "", spk_clean).strip()
         clean_lower = clean_name.lower()
 
-        if not clean_lower or clean_lower in GENERIC_SPEAKER_WORDS:
+        if not clean_lower or clean_lower in ORGANIZATIONAL_COMMON_WORDS:
             continue
 
-        # Dynamic multi-word speaker match (handles any role or full name dynamically)
+        # Strategy 1: Dynamic multi-word speaker full-name match
         if len(clean_lower) >= 4 and re.search(r"\b" + re.escape(clean_lower) + r"\b", q_lower):
             if spk_clean not in seen:
                 seen.add(spk_clean)
-                found_speakers.append((spk_clean, clean_lower, f"Detected participant '{spk_clean}'"))
+                found_speakers.append((spk_clean, clean_lower, f"Detected participant full name '{spk_clean}'"))
             continue
 
-        # Token level check with exact or fuzzy matching
-        tokens = [p for p in re.findall(r"[a-zA-Z]+", clean_name) if len(p) >= 3 and p.lower() not in GENERIC_SPEAKER_WORDS]
-        tokens_to_match = [
+        # Strategy 2: Multi-token role / compound phrase match (2 or 3 tokens)
+        tokens = [p for p in re.findall(r"[a-zA-Z0-9]+", clean_name) if len(p) >= 2]
+        if len(tokens) >= 2:
+            matched_phrase = False
+            for i in range(len(tokens) - 1):
+                phrase = f"{tokens[i].lower()} {tokens[i+1].lower()}"
+                if re.search(r"\b" + re.escape(phrase) + r"\b", q_lower):
+                    if spk_clean not in seen:
+                        seen.add(spk_clean)
+                        found_speakers.append((spk_clean, phrase, f"Detected participant by role phrase '{phrase}' -> '{spk_clean}'"))
+                    matched_phrase = True
+                    break
+            if matched_phrase:
+                continue
+
+        # Strategy 3: Distinctive proper name token match (filters out organizational common words)
+        distinctive_tokens = [
             t for t in tokens
-            if not (meeting_tokens and t.lower() in meeting_tokens)
+            if len(t) >= 3
+            and t.lower() not in ORGANIZATIONAL_COMMON_WORDS
         ]
-        for token in tokens_to_match:
+        for token in distinctive_tokens:
             matched = False
             for qw in q_words:
                 if is_name_token_match(qw, token):
                     if spk_clean not in seen:
                         seen.add(spk_clean)
-                        found_speakers.append((spk_clean, qw, f"Detected participant '{qw}' -> '{spk_clean}'"))
+                        found_speakers.append((spk_clean, qw, f"Detected participant proper name '{qw}' -> '{spk_clean}'"))
                     matched = True
                     break
             if matched:
@@ -232,6 +282,50 @@ def resolve_meeting_from_query(
     return None, None, "Universal semantic vector search across meeting transcripts"
 
 
+def classify_query_intent(query: str, resolved_speakers: List[str]) -> str:
+    """
+    Classifies user query into a semantic pipeline intent:
+    - CATALOG: Queries asking for schema/inventory of entities (projects, meetings, participants, topics, statuses, counts)
+    - PARTICIPANT_INVOLVEMENT: Queries asking which meetings a participant attended or was involved in
+    - CONTENT_QA: Substantive queries asking about meeting discussions, decisions, action items, or transcripts
+    """
+    q_lower = query.lower()
+
+    # 1. Participant Involvement Intent
+    involvement_signals = [
+        "which meeting", "what meeting", "how many meeting", "all meeting",
+        "list meeting", "attend", "attended", "present in", "participate",
+        "involved in", "take part", "part of which"
+    ]
+    if resolved_speakers and any(sig in q_lower for sig in involvement_signals):
+        return QueryIntent.PARTICIPANT_INVOLVEMENT
+
+    # 2. Catalog / Inventory / Schema Intent
+    catalog_entity_patterns = [
+        r"\b(?:projects?|active projects?)\b",
+        r"\b(?:meetings?|available meetings?|recorded meetings?)\b",
+        r"\b(?:participants?|speakers?|attendees?)\b",
+        r"\b(?:topics?|agenda items?)\b",
+    ]
+    catalog_action_patterns = [
+        r"\b(?:which|what|how many|count|list|show|enumerate|give me all|all the|all of the|available|existing|active|registered)\b"
+    ]
+    content_verbs = [
+        "say", "said", "discuss", "discussed", "mention", "mentioned",
+        "talk", "talked", "decide", "decided", "agree", "agreed",
+        "explain", "explained", "quote", "action item", "next step"
+    ]
+
+    has_catalog_entity = any(re.search(p, q_lower) for p in catalog_entity_patterns)
+    has_catalog_action = any(re.search(p, q_lower) for p in catalog_action_patterns)
+    has_content_verb = any(v in q_lower for v in content_verbs)
+
+    if has_catalog_entity and has_catalog_action and not has_content_verb and not resolved_speakers:
+        return QueryIntent.CATALOG
+
+    return QueryIntent.CONTENT_QA
+
+
 # ============================================================================
 # LangGraph State Schema
 # ============================================================================
@@ -241,6 +335,7 @@ class ChatState(TypedDict, total=False):
     Central state container tracked across all LangGraph nodes in the chat pipeline.
     """
     query: str
+    query_intent: str
     project_id: Optional[str]
     meeting_id: Optional[str]
     extracted_speaker: Optional[str]
@@ -249,6 +344,8 @@ class ChatState(TypedDict, total=False):
     retrieved_chunks: List[Dict[str, Any]]
     relevant_meetings: Optional[List[Dict[str, Any]]]
     available_meetings: Optional[List[Dict[str, Any]]]
+    available_projects: Optional[List[Dict[str, Any]]]
+    available_speakers: Optional[List[str]]
     answer: str
     citations: List[Dict[str, Any]]
     citations_count: int
@@ -267,8 +364,7 @@ class ChatState(TypedDict, total=False):
 async def extract_filters_node(state: ChatState) -> Dict[str, Any]:
     """
     Node 1: Extract Filters.
-    Parses user query to identify mentioned participants from database metadata
-    and checks if a specific meeting title or participant-based meeting scope is requested.
+    Parses user query to identify mentioned participants from database metadata, checks if a specific meeting title or participant-based meeting scope is requested, and classifies query intent (catalog vs participant involvement vs content Q&A).
     """
     query = state.get("query", "").strip()
     project_id = state.get("project_id")
@@ -279,32 +375,60 @@ async def extract_filters_node(state: ChatState) -> Dict[str, Any]:
 
     resolved_meeting_id = state.get("meeting_id")
     relevant_meetings: List[Dict[str, Any]] = []
+    available_meetings: List[Dict[str, Any]] = []
+    available_projects: List[Dict[str, Any]] = []
+    available_speakers: List[str] = []
+    query_intent = classify_query_intent(query, resolved_speakers)
     reasoning = "Universal semantic vector search across meeting transcripts"
 
     if AsyncSessionLocal is not None:
         async with AsyncSessionLocal() as session:
-            # 1. Fetch available meetings
-            m_res = await session.execute(text("SELECT id, title FROM meetings"))
+            # 1. Fetch available meetings and projects from PostgreSQL
+            m_res = await session.execute(text("SELECT id, title, project_id FROM meetings"))
             meetings_db = m_res.fetchall()
-            meetings_dict = {m_id: (m_title or m_id).strip() for m_id, m_title in meetings_db}
+            meetings_dict = {m[0]: (m[1] or m[0]).strip() for m in meetings_db}
+            available_meetings = [
+                {"id": m[0], "title": (m[1] or m[0]).strip(), "project_id": m[2]}
+                for m in meetings_db
+            ]
+
+            try:
+                p_res = await session.execute(text("SELECT id, name, status FROM projects"))
+                available_projects = [
+                    {"id": r[0], "name": (r[1] or r[0]).strip(), "status": (r[2] or "ACTIVE")}
+                    for r in p_res.fetchall()
+                ]
+            except Exception as e:
+                logger.warning(f"[LANGGRAPH: EXTRACT_FILTERS] Could not query projects table: {e}")
+
+            if not available_projects:
+                try:
+                    m_p_res = await session.execute(text("SELECT DISTINCT project_id FROM meetings WHERE project_id IS NOT NULL"))
+                    available_projects = [
+                        {"id": r[0], "name": f"Project {r[0]}", "status": "ACTIVE"}
+                        for r in m_p_res.fetchall()
+                    ]
+                except Exception:
+                    pass
 
             # Dynamically derive meeting title tokens from database records
             db_meeting_tokens = {
                 w.lower()
-                for _, title in meetings_db
+                for _, title, _ in meetings_db
                 if title
                 for w in re.findall(r"[a-zA-Z0-9_\-]+", title)
                 if len(w) > 2 and w.lower() not in MEETING_STOP_WORDS
             }
 
-            # 2. Dynamic Speaker Entity Extraction from database records and metadata
+            # 2. Dynamic Speaker Entity Extraction from database records
             matched_spk_phrase = None
+            spk_res = await session.execute(
+                text("SELECT DISTINCT COALESCE(metadata->>'speaker', speaker_name) FROM speaker_turns WHERE speaker_name IS NOT NULL OR metadata->>'speaker' IS NOT NULL")
+            )
+            available_speakers = [r[0] for r in spk_res.fetchall() if r[0]]
+
             if not resolved_speakers:
-                spk_res = await session.execute(
-                    text("SELECT DISTINCT COALESCE(metadata->>'speaker', speaker_name) FROM speaker_turns WHERE speaker_name IS NOT NULL OR metadata->>'speaker' IS NOT NULL")
-                )
-                speakers_db = [r[0] for r in spk_res.fetchall() if r[0]]
-                found_speakers = resolve_speakers_from_query(query, speakers_db, db_meeting_tokens)
+                found_speakers = resolve_speakers_from_query(query, available_speakers, db_meeting_tokens)
                 if found_speakers:
                     resolved_speakers = [s[0] for s in found_speakers]
                     resolved_speaker = resolved_speakers[0]
@@ -313,70 +437,80 @@ async def extract_filters_node(state: ChatState) -> Dict[str, Any]:
                         logger.info(f"[LANGGRAPH: EXTRACT_FILTERS] {s[2]}")
 
             # 3. Dynamic Meeting Resolution
+            m_db_pairs = [(m[0], m[1]) for m in meetings_db]
             if resolved_meeting_id:
                 m_title = meetings_dict.get(resolved_meeting_id, resolved_meeting_id)
                 reasoning = f"Scoped to meeting '{m_title}' ({resolved_meeting_id})"
             else:
-                m_id, m_title, meeting_reasoning = resolve_meeting_from_query(query, meetings_db, matched_spk_phrase)
+                m_id, m_title, meeting_reasoning = resolve_meeting_from_query(query, m_db_pairs, matched_spk_phrase)
                 if m_id:
                     resolved_meeting_id = m_id
                     reasoning = meeting_reasoning
-                elif resolved_speakers:
-                    # Participant-based meeting resolution:
-                    # Query all meetings where the resolved speaker(s) participated
-                    spk_clauses = []
-                    params = {}
-                    for idx, s in enumerate(resolved_speakers):
-                        p_name = f"s_param_{idx}"
-                        spk_clauses.append(f"(t.metadata->>'speaker' ILIKE :{p_name} OR LOWER(t.speaker_name) LIKE :{p_name})")
-                        params[p_name] = f"%{s.lower()}%"
 
-                    spk_sql = (
-                        "SELECT m.id, m.title, count(t.turn_id) as turn_count "
-                        "FROM meetings m "
-                        "JOIN speaker_turns t ON m.id = t.meeting_id "
-                        f"WHERE {' OR '.join(spk_clauses)} "
-                        "GROUP BY m.id, m.title "
-                        "ORDER BY turn_count DESC"
-                    )
-                    m_spk_res = await session.execute(text(spk_sql), params)
-                    m_candidates = m_spk_res.fetchall()
-                    if m_candidates:
-                        relevant_meetings = [
-                            {"id": r[0], "title": (r[1] or r[0]).strip(), "turns": r[2]}
-                            for r in m_candidates
-                        ]
-                        is_involvement_query = any(w in query.lower() for w in ["meeting", "meetings", "involved", "attend", "attended", "present", "which", "where", "who", "all", "list", "part of"])
-                        if len(relevant_meetings) == 1 and not is_involvement_query:
-                            resolved_meeting_id = relevant_meetings[0]["id"]
-                            reasoning = f"Scoped to meeting '{relevant_meetings[0]['title']}' ({resolved_meeting_id}) based on participant: {', '.join(resolved_speakers)}"
-                        else:
-                            # Multiple meetings or cross-meeting inquiry: DO NOT restrict to a single meeting!
-                            m_titles_summary = ", ".join(f"'{m['title']}'" for m in relevant_meetings)
-                            reasoning = f"Found {len(relevant_meetings)} meetings for {', '.join(resolved_speakers)}: {m_titles_summary}"
-                    else:
-                        reasoning = "Universal semantic vector search across meeting transcripts"
+            # 4. Classify Query Intent (Generic Intent Classification)
+            query_intent = classify_query_intent(query, resolved_speakers)
+
+            # 5. Intent-driven routing logic
+            if query_intent == QueryIntent.PARTICIPANT_INVOLVEMENT and resolved_speakers:
+                spk_clauses = []
+                params = {}
+                for idx, s in enumerate(resolved_speakers):
+                    p_name = f"s_param_{idx}"
+                    spk_clauses.append(f"(t.metadata->>'speaker' ILIKE :{p_name} OR LOWER(t.speaker_name) LIKE :{p_name})")
+                    params[p_name] = f"%{s.lower()}%"
+
+                spk_sql = (
+                    "SELECT m.id, m.title, count(t.turn_id) as turn_count "
+                    "FROM meetings m "
+                    "JOIN speaker_turns t ON m.id = t.meeting_id "
+                    f"WHERE {' OR '.join(spk_clauses)} "
+                    "GROUP BY m.id, m.title "
+                    "ORDER BY turn_count DESC"
+                )
+                m_spk_res = await session.execute(text(spk_sql), params)
+                m_candidates = m_spk_res.fetchall()
+                if m_candidates:
+                    relevant_meetings = [
+                        {"id": r[0], "title": (r[1] or r[0]).strip(), "turns": r[2]}
+                        for r in m_candidates
+                    ]
+                    m_titles_summary = ", ".join(f"'{m['title']}'" for m in relevant_meetings)
+                    reasoning = f"Found {len(relevant_meetings)} meeting(s) for participant(s) {', '.join(resolved_speakers)}: {m_titles_summary}"
                 else:
-                    reasoning = "Universal semantic vector search across meeting transcripts"
+                    reasoning = f"No meeting records found for participant(s): {', '.join(resolved_speakers)}"
 
-            if resolved_speakers and "Scoped to meeting" in reasoning and "based on participant" not in reasoning:
-                reasoning += f" | Filtered to speakers: {', '.join(resolved_speakers)}"
-            elif resolved_speakers and "Scoped to meeting" not in reasoning:
-                reasoning += f" (Participants: {', '.join(resolved_speakers)})"
+            elif query_intent == QueryIntent.CATALOG:
+                catalog_entities = []
+                q_lower = query.lower()
+                if any(w in q_lower for w in ["project", "projects"]):
+                    catalog_entities.append(f"{len(available_projects)} project(s)")
+                if any(w in q_lower for w in ["meeting", "meetings"]):
+                    catalog_entities.append(f"{len(available_meetings)} meeting(s)")
+                if any(w in q_lower for w in ["participant", "participants", "speaker", "speakers", "attendee", "attendees"]):
+                    catalog_entities.append(f"{len(available_speakers)} participant(s)")
+                ent_desc = ", ".join(catalog_entities) if catalog_entities else "catalog entities"
+                reasoning = f"Catalog query resolved against relational database: {ent_desc}"
 
-            available_meetings = [{"id": m_id, "title": (m_title or m_id).strip()} for m_id, m_title in meetings_db]
+            else:
+                if resolved_speakers and not resolved_meeting_id:
+                    reasoning = f"Universal semantic search filtered to participant(s): {', '.join(resolved_speakers)}"
+                elif resolved_speakers and resolved_meeting_id:
+                    reasoning += f" | Filtered to participant(s): {', '.join(resolved_speakers)}"
 
     logger.info(
-        f"[LANGGRAPH: EXTRACT_FILTERS] Speakers: {resolved_speakers} | "
-        f"Meeting: '{resolved_meeting_id}' | Relevant Meetings: {len(relevant_meetings)} | Project: '{project_id}' | Reasoning: '{reasoning}'"
+        f"[LANGGRAPH: EXTRACT_FILTERS] Intent: {query_intent} | Speakers: {resolved_speakers} | "
+        f"Meeting: '{resolved_meeting_id}' | Relevant Meetings: {len(relevant_meetings)} | Projects: {len(available_projects)} | Reasoning: '{reasoning}'"
     )
 
     return {
+        "query_intent": query_intent,
         "extracted_speaker": resolved_speaker,
         "extracted_speakers": resolved_speakers,
         "meeting_id": resolved_meeting_id,
         "project_id": project_id,
         "available_meetings": available_meetings,
+        "available_projects": available_projects,
+        "available_speakers": available_speakers,
         "relevant_meetings": relevant_meetings,
         "reasoning": reasoning,
     }
@@ -505,9 +639,9 @@ async def vector_retrieval_node(state: ChatState) -> Dict[str, Any]:
                     r[0], r[1], r[2], r[3], r[4], r[5], r[6], r[7], r[8], r[9], r[10]
                 )
                 txt_raw = (txt or "").strip()
-                # Downweight non-substantive conversational fillers (< 15 chars monosyllables like "Ah,.", "Okay.")
+                # Downweight non-substantive conversational fillers (< 15 chars monosyllables)
                 is_filler = len(txt_raw) < 15 and bool(re.match(r"^(?:ah|ok|okay|yes|no|yeah|right|correct|hello|hi|bye|thanks)[\.\,\s]*$", txt_raw.lower()))
-                
+
                 enriched_chunk = enrich_chunk_text(spk, ts_str, txt_raw)
                 enriched_lower = enriched_chunk.lower()
 
@@ -519,7 +653,7 @@ async def vector_retrieval_node(state: ChatState) -> Dict[str, Any]:
                     score += 3.5
 
                 if is_filler:
-                    score -= 2.0  # Penalize empty monosyllables so substantive turns are prioritized
+                    score -= 2.0
 
                 candidates.append({
                     "turn_id": t_id or f"{m_id}_turn",
@@ -541,14 +675,13 @@ async def vector_retrieval_node(state: ChatState) -> Dict[str, Any]:
                 if m_id:
                     distinct_meetings.setdefault(m_id, []).append(c)
 
-            # Stratified & Speaker-Diverse Retrieval:
-            # Guarantee fair representation across all matching meetings AND distinct speakers
+            # Stratified & Speaker-Diverse Retrieval
             if len(distinct_meetings) > 1 and not resolved_meeting_id:
                 selected_chunks: List[Dict[str, Any]] = []
                 num_meetings = len(distinct_meetings)
                 max_total_chunks = min(30, max(12, num_meetings * 4))
 
-                # Pass 1: Speaker-diverse selection from each meeting (up to 2 distinct speakers per meeting)
+                # Pass 1: Speaker-diverse selection from each meeting
                 for m_id, m_chunks in distinct_meetings.items():
                     m_chunks.sort(key=lambda x: x["similarity_score"], reverse=True)
                     seen_spks_in_mtg = set()
@@ -570,7 +703,7 @@ async def vector_retrieval_node(state: ChatState) -> Dict[str, Any]:
                         selected_chunks.append(c)
                         represented_speakers.add(spk)
 
-                # Pass 3: Balanced Round-Robin across meetings to prevent single-meeting starvation
+                # Pass 3: Balanced Round-Robin across meetings
                 for round_idx in range(3):
                     for m_id, m_chunks in distinct_meetings.items():
                         if len(selected_chunks) >= max_total_chunks:
@@ -580,7 +713,6 @@ async def vector_retrieval_node(state: ChatState) -> Dict[str, Any]:
                             if chunk not in selected_chunks:
                                 selected_chunks.append(chunk)
 
-                # Sort chronologically by meeting and start_time
                 selected_chunks.sort(key=lambda x: (x.get("meeting_id", ""), x.get("start_time", 0.0)))
                 retrieved_chunks = selected_chunks
             elif len(resolved_speakers) > 1:
@@ -609,7 +741,6 @@ async def vector_retrieval_node(state: ChatState) -> Dict[str, Any]:
                 selected_chunks.sort(key=lambda x: x["start_time"])
                 retrieved_chunks = selected_chunks
             else:
-                # Single meeting or single scope: prioritize distinct speakers across candidate turns
                 by_spk: Dict[str, List[Dict[str, Any]]] = {}
                 for c in candidates:
                     by_spk.setdefault(c["speaker"], []).append(c)
@@ -644,15 +775,22 @@ async def vector_retrieval_node(state: ChatState) -> Dict[str, Any]:
 async def llm_synthesis_node(state: ChatState) -> Dict[str, Any]:
     """
     Node 4: LLM Synthesis with OpenRouter.
-    Executes conversational completion strictly grounded in verified transcript turns.
+    Executes conversational completion strictly grounded in verified database catalog records
+    and transcript excerpts.
     """
     llm_start = time.time()
     query = state.get("query", "").strip()
+    query_lower = query.lower()
     retrieved_chunks = state.get("retrieved_chunks", [])
     resolved_speaker = state.get("extracted_speaker")
     resolved_speakers: List[str] = state.get("extracted_speakers") or ([resolved_speaker] if resolved_speaker else [])
 
-    # Build prompt context blocks with meeting titles and IDs
+    available_projects = state.get("available_projects") or []
+    available_meetings = state.get("available_meetings") or []
+    available_speakers = state.get("available_speakers") or []
+    relevant_meetings = state.get("relevant_meetings") or []
+
+    # Build prompt context blocks from retrieved transcript turns
     context_blocks = []
     for i, c in enumerate(retrieved_chunks):
         m_title_str = c.get("meeting_title") or c.get("meeting_id") or "Meeting"
@@ -662,35 +800,69 @@ async def llm_synthesis_node(state: ChatState) -> Dict[str, Any]:
         )
     formatted_context = "\n---\n".join(context_blocks)
 
-    available_meetings = state.get("available_meetings") or []
-    relevant_meetings = state.get("relevant_meetings") or []
-
     extra_record_context = ""
-    list_instruction = ""
+    list_instructions: List[str] = []
 
-    # Case A: If user asked about specific speaker(s) across meetings
+    # 1. Projects Catalog
+    if available_projects and any(w in query_lower for w in ["project", "projects"]):
+        active_projs = [p for p in available_projects if p.get("status", "").upper() == "ACTIVE"]
+        proj_lines = "\n".join(
+            f"- **{p['name']}** (ID: {p['id']}, Status: {p.get('status', 'ACTIVE')})"
+            for p in available_projects
+        )
+        extra_record_context += (
+            f"Database Catalog - Projects ({len(available_projects)} total, {len(active_projs)} active):\n"
+            f"{proj_lines}\n\n---\n"
+        )
+        list_instructions.append(
+            "- Answer the project inquiry strictly using the verified Database Catalog above. State the project names, IDs, and statuses accurately."
+        )
+
+    # 2. Meetings Catalog
+    if available_meetings and any(w in query_lower for w in ["meeting", "meetings"]):
+        is_general_meeting_query = any(w in query_lower for w in ["all", "list", "how many", "which", "available", "recorded", "what meetings"])
+        if is_general_meeting_query and not state.get("meeting_id") and not resolved_speakers:
+            mtg_lines = "\n".join(
+                f"- **{m['title']}** (ID: {m['id']})"
+                for m in available_meetings
+            )
+            extra_record_context += (
+                f"Database Catalog - Complete List of Meetings ({len(available_meetings)} total):\n"
+                f"{mtg_lines}\n\n---\n"
+            )
+            list_instructions.append(
+                f"- The user is asking to list or count meetings. You MUST enumerate the {len(available_meetings)} meetings from the Database Catalog above with their titles and IDs."
+            )
+
+    # 3. Participants / Speakers Catalog
+    if available_speakers and any(w in query_lower for w in ["speaker", "speakers", "participant", "participants", "attendee", "attendees"]):
+        if any(w in query_lower for w in ["all", "list", "how many", "who", "which", "available"]):
+            spk_lines = "\n".join(f"- {s}" for s in available_speakers)
+            extra_record_context += (
+                f"Database Catalog - Participants / Speakers ({len(available_speakers)} total):\n"
+                f"{spk_lines}\n\n---\n"
+            )
+            list_instructions.append(
+                "- The user is asking to list or count participants/speakers. Enumerate from the verified Database Catalog above."
+            )
+
+    # 4. Participant Involvement
     if relevant_meetings and resolved_speakers:
         spk_label = ", ".join(resolved_speakers)
         mtg_bullets = "\n".join(
             f"- **{m['title']}** (ID: {m['id']}, {m.get('turns', 0)} turns)"
             for m in relevant_meetings
         )
-        extra_record_context = (
+        extra_record_context += (
             f"Database Records - Verified Meetings with Participant(s) {spk_label} ({len(relevant_meetings)} total):\n"
             f"{mtg_bullets}\n\n---\n"
         )
-        list_instruction = (
-            f"- The user is asking about meetings involving {spk_label}. You MUST explicitly list and mention ALL {len(relevant_meetings)} verified meetings ({', '.join(m['title'] for m in relevant_meetings)}) from the Database Records above in your answer, providing relevant context or quotes for each.\n"
+        list_instructions.append(
+            f"- The user is asking about meetings involving {spk_label}. You MUST explicitly list and mention ALL {len(relevant_meetings)} verified meetings from the Database Records above in your answer."
         )
 
-    # Case B: General system-wide list meetings query
-    is_general_list_query = bool(re.search(r"\b(?:list (?:all )?meetings|what meetings|which meetings|all the meetings|all meetings|how many meetings|meeting list|available meetings)\b", query.lower())) and not resolved_speakers
-    if is_general_list_query and available_meetings:
-        mtg_list_str = "\n".join(f"- {m['title']} (ID: {m['id']})" for m in available_meetings)
-        extra_record_context = f"Database Records - Complete List of All Ingested Meetings in the System ({len(available_meetings)} total):\n{mtg_list_str}\n\n---\n"
-        list_instruction = f"- The user is asking to list all meetings. You MUST list all {len(available_meetings)} meetings from the Database Records above with their titles and IDs.\n"
-
     formatted_context = extra_record_context + formatted_context
+    instruction_str = "\n".join(list_instructions) if list_instructions else ""
 
     user_prompt = (
         f"User Query: {query}\n\n"
@@ -698,7 +870,7 @@ async def llm_synthesis_node(state: ChatState) -> Dict[str, Any]:
         f"Instructions:\n"
         f"- Provide a direct, professional, conversational narrative answer to the user's query.\n"
         f"- Never dump raw transcript turns, timestamps, or quotation lists into the main text.\n"
-        f"{list_instruction}"
+        f"{instruction_str}\n"
         f"- Ground your statements strictly in the facts provided in the excerpts and records."
     )
 
@@ -735,7 +907,7 @@ async def llm_synthesis_node(state: ChatState) -> Dict[str, Any]:
 
 def align_citations_with_answer(retrieved_chunks: List[Dict[str, Any]], answer: str) -> List[Dict[str, Any]]:
     """
-    Provenance Alignment (Solution 1):
+    Provenance Alignment:
     Guarantees that citation cards strictly align with facts, meetings, and speakers discussed in the LLM answer.
     Filters out unreferenced candidate chunks from unrelated meetings/speakers.
     """
@@ -765,11 +937,12 @@ def align_citations_with_answer(retrieved_chunks: List[Dict[str, Any]], answer: 
             mentioned_meetings.add(m_id)
 
     # 3. Speaker-Level Provenance Alignment
+    stop_speaker_tokens = ORGANIZATIONAL_COMMON_WORDS | {"mr", "ms", "mrs", "dr", "the", "and"}
     mentioned_speakers = set()
     for c in retrieved_chunks:
         spk = (c.get("speaker") or "").strip()
         if spk and spk != "Unknown":
-            if spk.lower() in ans_lower or any(tok.lower() in ans_lower for tok in spk.split() if len(tok) >= 3 and tok.lower() not in {"the", "and", "sfs", "mr", "ms"}):
+            if spk.lower() in ans_lower or any(tok.lower() in ans_lower for tok in spk.split() if len(tok) >= 3 and tok.lower() not in stop_speaker_tokens):
                 mentioned_speakers.add(spk.lower())
 
     distinct_retrieved_meetings = set(c.get("meeting_id") for c in retrieved_chunks if c.get("meeting_id"))
@@ -797,6 +970,7 @@ async def format_citations_node(state: ChatState) -> Dict[str, Any]:
     """
     retrieved_chunks = state.get("retrieved_chunks", [])
     answer = state.get("answer", "")
+    query_intent = state.get("query_intent") or "content_qa"
     aligned_chunks = align_citations_with_answer(retrieved_chunks, answer)
 
     citations: List[Dict[str, Any]] = []
@@ -810,16 +984,18 @@ async def format_citations_node(state: ChatState) -> Dict[str, Any]:
             "topic_context": c.get("topic_context", "Level 1 Turn"),
         })
 
+    routing_mode = "LANGGRAPH_CATALOG" if query_intent == QueryIntent.CATALOG else "LANGGRAPH_RAG"
+
     logger.info(
         f"[LANGGRAPH: FORMAT_CITATIONS] Packaged {len(citations)} Level 1 citations "
-        f"(aligned from {len(retrieved_chunks)} candidate chunks)."
+        f"(aligned from {len(retrieved_chunks)} candidate chunks) | Mode: {routing_mode}"
     )
 
     return {
         "citations": citations,
         "citations_count": len(citations),
         "provenance_verified": True,
-        "routing_mode": "LANGGRAPH_RAG",
+        "routing_mode": routing_mode,
     }
 
 

@@ -111,9 +111,11 @@ class MeetingResponse(BaseModel):
     """Complete meeting entity details with normalized speaker turns."""
     id: str
     title: Optional[str] = None
+    summary: Optional[str] = None
     date: Optional[str] = None
     duration: Optional[float] = None
     status: str
+    project_id: Optional[str] = None
     total_turns: int
     created_at: datetime
     updated_at: datetime
@@ -126,9 +128,11 @@ class MeetingSummary(BaseModel):
     """Summary representation for meeting listing."""
     id: str
     title: Optional[str] = None
+    summary: Optional[str] = None
     date: Optional[str] = None
     duration: Optional[float] = None
     status: str
+    project_id: Optional[str] = None
     total_turns: int
     created_at: datetime
 
@@ -139,3 +143,9 @@ class MeetingListResponse(BaseModel):
     """Paginated or listed meeting overview."""
     total: int
     meetings: List[MeetingSummary]
+
+
+class ProjectListResponse(BaseModel):
+    """List of all known project identifiers."""
+    total: int
+    projects: List[str]

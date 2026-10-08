@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 import httpx
 import streamlit as st
+import streamlit.components.v1 as components
 
 # Ensure frontend directory is in Python module path
 FRONTEND_DIR = Path(__file__).resolve().parent
@@ -48,7 +49,7 @@ logger = logging.getLogger("streamlit_app")
 # ============================================================================
 st.set_page_config(
     page_title="Meeting Intelligence",
-    page_icon="✨",
+    page_icon="🎙️",
     layout="wide",
     initial_sidebar_state="expanded",
 )
@@ -64,21 +65,106 @@ st.markdown("""
         font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
     }
 
-    /* Container Spacing */
-    .block-container {
-        padding-top: 1.5rem;
-        padding-bottom: 3.5rem;
-        max-width: 1300px;
+    /* Headless helper iframes: zero visual impact */
+    iframe[height="0"] {
+        position: absolute !important;
+        height: 0 !important;
+        width: 0 !important;
+        opacity: 0 !important;
+        pointer-events: none !important;
+        border: none !important;
+        margin: 0 !important;
+        padding: 0 !important;
     }
 
-    /* Gemini Hero Banner */
+    /* Transparent Header with Fully Interactive Sidebar Collapse Controls */
+    header[data-testid="stHeader"] {
+        background: transparent !important;
+        z-index: 100 !important;
+    }
+    header[data-testid="stHeader"] button,
+    [data-testid="collapsedControl"],
+    button[data-testid="stSidebarCollapseButton"] {
+        pointer-events: auto !important;
+        cursor: pointer !important;
+        display: flex !important;
+        visibility: visible !important;
+        opacity: 1 !important;
+        color: #94A3B8 !important;
+    }
+
+    /* Container Spacing: Push down so tabs are fully visible and never clipped */
+    .block-container {
+        padding-top: 4.2rem !important;
+        padding-bottom: 4.5rem !important;
+        max-width: 1320px;
+    }
+
+    /* Modern Minimalist Underline Tab Navigation */
+    [data-testid="stTabs"] {
+        margin-top: 0.2rem !important;
+        margin-bottom: 1.2rem !important;
+    }
+    [data-testid="stTabs"] [data-baseweb="tab-list"] {
+        gap: 24px !important;
+        background: transparent !important;
+        padding: 0 0 6px 0 !important;
+        border-radius: 0 !important;
+        border: none !important;
+        border-bottom: 1px solid rgba(255, 255, 255, 0.08) !important;
+        box-shadow: none !important;
+    }
+    [data-testid="stTabs"] [data-baseweb="tab"] {
+        height: 38px !important;
+        padding: 0 6px 8px 6px !important;
+        border-radius: 0 !important;
+        color: #94A3B8 !important;
+        font-weight: 500 !important;
+        font-size: 0.92rem !important;
+        transition: color 0.15s ease, border-color 0.15s ease !important;
+        border: none !important;
+        background: transparent !important;
+        border-bottom: 2px solid transparent !important;
+    }
+    [data-testid="stTabs"] [data-baseweb="tab"]:hover {
+        color: #F8FAFC !important;
+        background: transparent !important;
+    }
+    [data-testid="stTabs"] [aria-selected="true"] {
+        background: transparent !important;
+        color: #38BDF8 !important;
+        font-weight: 600 !important;
+        border: none !important;
+        border-bottom: 2px solid #38BDF8 !important;
+    }
+    [data-testid="stTabs"] [data-baseweb="tab-highlight"] {
+        display: none !important;
+    }
+    [data-testid="stTabs"] [data-baseweb="tab-border"] {
+        display: none !important;
+    }
+
+    /* Clean Borderless Hero Greeting */
     .gemini-hero {
-        padding: 2.2rem 1.5rem 1.8rem 1.5rem;
+        padding: 2rem 1.5rem 1.2rem 1.5rem;
         text-align: center;
-        background: radial-gradient(circle at 50% 0%, rgba(66, 133, 244, 0.12) 0%, rgba(155, 114, 203, 0.06) 45%, transparent 75%);
-        border-radius: 20px;
-        margin-bottom: 1.8rem;
-        border: 1px solid rgba(255, 255, 255, 0.06);
+        background: transparent;
+        margin-bottom: 1.2rem;
+        border: none;
+    }
+    .hero-badge {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        padding: 4px 12px;
+        border-radius: 9999px;
+        font-size: 0.76rem;
+        font-weight: 600;
+        letter-spacing: 0.03em;
+        background: rgba(56, 189, 248, 0.1);
+        color: #38BDF8;
+        border: 1px solid rgba(56, 189, 248, 0.22);
+        margin-bottom: 0.8rem;
     }
     .gemini-title {
         font-family: 'Google Sans', 'Inter', sans-serif;
@@ -92,7 +178,7 @@ st.markdown("""
     }
     .gemini-subtitle {
         color: #94A3B8;
-        font-size: 1.05rem;
+        font-size: 1rem;
         max-width: 650px;
         margin: 0 auto;
         line-height: 1.5;
@@ -247,14 +333,27 @@ st.markdown("""
         margin-top: 0.35rem;
     }
 
-    /* Scrollable Chat Container Styling */
+    /* Scrollable Chat Container Styling - Clean Borderless Design */
     [data-testid="stVerticalBlockBorderWrapper"] {
-        border-color: rgba(255, 255, 255, 0.08) !important;
-        border-radius: 16px !important;
-        background: rgba(15, 23, 42, 0.25);
+        border: none !important;
+        background: transparent !important;
+        box-shadow: none !important;
     }
     [data-testid="stVerticalBlockBorderWrapper"] [data-testid="stVerticalBlock"] {
-        padding-right: 0.5rem;
+        padding-right: 0.4rem;
+    }
+
+    /* Clean Chat Message Cards */
+    [data-testid="stChatMessage"] {
+        background: rgba(15, 23, 42, 0.45) !important;
+        border: 1px solid rgba(255, 255, 255, 0.05) !important;
+        border-radius: 12px !important;
+        padding: 0.85rem 1.1rem !important;
+        margin-bottom: 0.75rem !important;
+        transition: border-color 0.15s ease !important;
+    }
+    [data-testid="stChatMessage"]:hover {
+        border-color: rgba(255, 255, 255, 0.1) !important;
     }
     /* Fixed Bottom Chat Input Bar */
     [data-testid="stBottom"] {
@@ -493,7 +592,7 @@ def render_citations(citations: List[Dict[str, Any]]) -> None:
 
 
 # ============================================================================
-# Session State Initialization
+# Session State Initialization & Project Discovery
 # ============================================================================
 if "messages" not in st.session_state:
     st.session_state.messages = []
@@ -501,42 +600,49 @@ if "messages" not in st.session_state:
 if "pending_query" not in st.session_state:
     st.session_state.pending_query = None
 
+# Fetch active meetings for selectors and explorer
+try:
+    active_meetings = api_client.list_meetings()
+except Exception:
+    active_meetings = []
+
+# Fetch and initialize known project IDs
+if "available_projects" not in st.session_state:
+    fetched_projects = []
+    try:
+        fetched_projects = api_client.list_projects()
+    except Exception:
+        pass
+
+    meeting_projects = [
+        m.get("project_id") for m in active_meetings if m.get("project_id")
+    ]
+    initial_projects = set(fetched_projects + meeting_projects)
+    st.session_state.available_projects = sorted(
+        [p.strip() for p in initial_projects if p and p.strip()]
+    )
+else:
+    # Dynamically incorporate any projects discovered in newly fetched meetings
+    for m in active_meetings:
+        p_id = m.get("project_id")
+        if p_id and p_id.strip() and p_id.strip() not in st.session_state.available_projects:
+            st.session_state.available_projects.append(p_id.strip())
+            st.session_state.available_projects.sort()
+
+if "selected_ingest_project" not in st.session_state:
+    st.session_state.selected_ingest_project = (
+        st.session_state.available_projects[0] if st.session_state.available_projects else "➕ Add New Project..."
+    )
+
 
 # ============================================================================
 # Sidebar Controls & Scope Navigation
 # ============================================================================
 with st.sidebar:
-    st.markdown("### ✨ Platform Controls")
-
-    # Backend Connection Status Card
-    health_status = api_client.check_health()
-    backend_url = frontend_config.FASTAPI_BACKEND_URL
-
-    if health_status.get("is_healthy"):
-        st.markdown(f"""
-        <div class="sidebar-card">
-            <div style="font-size: 0.85rem;"><strong>Backend API:</strong> <span class="status-online">● Connected</span></div>
-            <div style="color: #64748B; font-family: 'JetBrains Mono', monospace; font-size: 0.72rem; margin-top: 4px;">{backend_url}</div>
-        </div>
-        """, unsafe_allow_html=True)
-    else:
-        err_msg = health_status.get("error", "Offline")
-        st.markdown(f"""
-        <div class="sidebar-card">
-            <div style="font-size: 0.85rem;"><strong>Backend API:</strong> <span class="status-offline">● Disconnected</span></div>
-            <div style="color: #EF4444; font-size: 0.72rem; margin-top: 4px;">{err_msg}</div>
-        </div>
-        """, unsafe_allow_html=True)
-
-    # Scope Filter Controls
-    st.markdown("#### 🎯 Scope Filter")
+    st.markdown("### 🎯 Scope Filter")
+    st.caption("Narrow retrieval context across specific meetings, projects, or speakers.")
 
     # Meeting Selector Dropdown
-    try:
-        active_meetings = api_client.list_meetings()
-    except Exception:
-        active_meetings = []
-
     meeting_options = ["All Meetings"] + [
         f"{(m.get('title') or '').strip() or m.get('id')} ({m.get('id')})" for m in active_meetings
     ]
@@ -552,12 +658,15 @@ with st.sidebar:
         if m_match:
             selected_meeting_id = m_match.group(1).strip()
 
-    project_scope = st.text_input(
-        "Project ID (Optional)",
-        value="",
-        placeholder="e.g., proj-fireflies-ai",
+    # Project Scope Dropdown (prevents manual typos)
+    proj_scope_options = ["All Projects"] + [p for p in st.session_state.available_projects if p]
+    selected_proj_scope_option = st.selectbox(
+        "Project Scope (Optional)",
+        options=proj_scope_options,
+        index=0,
         help="Optional: Filter citations and LLM synthesis to a specific project boundary."
-    ).strip()
+    )
+    project_scope = "" if selected_proj_scope_option == "All Projects" else selected_proj_scope_option
 
     speaker_scope = st.text_input(
         "Speaker Filter (Optional)",
@@ -566,28 +675,13 @@ with st.sidebar:
         help="Optional: Focus citations and search strictly on a specific speaker or participant."
     ).strip()
 
+    st.markdown("<div style='margin-top: 1.2rem;'></div>", unsafe_allow_html=True)
+
     # Clear Chat History Button
-    st.markdown("---")
     if st.button("🗑️ Clear Chat History", use_container_width=True, type="secondary"):
         st.session_state.messages = []
         st.session_state.pending_query = None
         st.rerun()
-
-    # Repository Metrics Card
-    st.markdown("#### 📊 Repository Metrics")
-    try:
-        total_meetings_count = len(active_meetings)
-        total_turns_count = sum(m.get("total_turns", 0) for m in active_meetings)
-        col_m1, col_m2 = st.columns(2)
-        with col_m1:
-            st.metric("Meetings", total_meetings_count)
-        with col_m2:
-            st.metric("Turns", total_turns_count)
-    except Exception:
-        st.caption("Metrics unavailable")
-
-    st.markdown("---")
-    st.caption("🛡️ **Decoupled Architecture**: Zero database imports in frontend. All queries communicate via REST on `/api/v1/query`.")
 
 
 # ============================================================================
@@ -612,12 +706,31 @@ with tab_chat:
         if not st.session_state.messages:
             st.markdown("""
             <div class="gemini-hero">
+                <div class="hero-badge">🎙️ Transcript Intelligence</div>
                 <div class="gemini-title">Meeting Intelligence</div>
                 <div class="gemini-subtitle">
-                    Ask questions across your ingested meeting transcripts with guaranteed Level 1 speaker turn grounding and conversational AI synthesis.
+                    Ask questions across your ingested meeting transcripts with guaranteed grounded citations and speaker attribution.
                 </div>
             </div>
             """, unsafe_allow_html=True)
+
+            # Interactive Starter Prompts
+            st.markdown("<p style='text-align: center; color: #64748B; font-size: 0.82rem; margin-bottom: 0.8rem;'>Suggested queries to explore:</p>", unsafe_allow_html=True)
+            col_p1, col_p2 = st.columns(2)
+            with col_p1:
+                if st.button("📌 What key decisions were ratified?", use_container_width=True, type="secondary"):
+                    st.session_state.pending_query = "What key decisions were ratified in the meetings?"
+                    st.rerun()
+                if st.button("⚠️ Are there any unresolved blockers or risks?", use_container_width=True, type="secondary"):
+                    st.session_state.pending_query = "Are there any unresolved blockers or risks mentioned in the transcripts?"
+                    st.rerun()
+            with col_p2:
+                if st.button("📋 Summarize commitments and action items", use_container_width=True, type="secondary"):
+                    st.session_state.pending_query = "Summarize all commitments and action items with their respective owners."
+                    st.rerun()
+                if st.button("👥 Who were the participants and key topics?", use_container_width=True, type="secondary"):
+                    st.session_state.pending_query = "Who were the meeting participants and what topics were discussed?"
+                    st.rerun()
 
         # Render Conversation History inside the Scrollable Container
         for msg in st.session_state.messages:
@@ -628,7 +741,7 @@ with tab_chat:
             routing_reasoning = msg.get("routing_reasoning")
             llm_model = msg.get("llm_model_used")
 
-            with st.chat_message(role, avatar="👤" if role == "user" else "✨"):
+            with st.chat_message(role, avatar="👤" if role == "user" else "🤖"):
                 if role == "assistant":
                     # Render Metadata Pills
                     pills_html = '<div style="margin-bottom: 0.6rem;">'
@@ -671,7 +784,7 @@ with tab_chat:
                 st.markdown(clean_prompt)
 
             # 2. Issue REST Request to Backend with Visual Loading Spinner inside container
-            with st.chat_message("assistant", avatar="✨"):
+            with st.chat_message("assistant", avatar="🤖"):
                 with st.spinner("Searching meeting transcripts & synthesizing grounded response..."):
                     response_data = handle_backend_query(
                         prompt=clean_prompt,
@@ -752,15 +865,107 @@ with tab_ingest:
             placeholder="Leave blank to dynamically extract title from URL slug",
             help="If left blank, the system automatically parses and formats the URL slug into a title."
         )
-        target_project_id = st.text_input(
+        # Target Project ID: Dropdown of existing projects + inline Add New Project option
+        ADD_NEW_OPTION = "➕ Add New Project..."
+        project_select_options = [p for p in st.session_state.available_projects if p]
+        if ADD_NEW_OPTION not in project_select_options:
+            project_select_options.append(ADD_NEW_OPTION)
+
+        current_selected = st.session_state.get("selected_ingest_project", project_select_options[0])
+        sel_idx = project_select_options.index(current_selected) if current_selected in project_select_options else 0
+
+        chosen_project = st.selectbox(
             "Target Project ID",
-            value="proj-fireflies-ai",
-            help="The project organizational boundary for this meeting."
+            options=project_select_options,
+            index=sel_idx,
+            help="Select an existing project ID to avoid typos, or choose '➕ Add New Project...' to register a new one."
         )
+
+        target_project_id = ""
+        if chosen_project == ADD_NEW_OPTION:
+            def handle_new_project_submit():
+                raw_val = st.session_state.get("new_project_id_input", "").strip()
+                if raw_val:
+                    if raw_val not in st.session_state.available_projects:
+                        st.session_state.available_projects.append(raw_val)
+                        st.session_state.available_projects.sort()
+                    st.session_state.selected_ingest_project = raw_val
+
+            col_new_p, col_add_btn = st.columns([3, 1])
+            with col_new_p:
+                new_project_input = st.text_input(
+                    "New Project ID",
+                    placeholder="e.g., proj-marketing-q4",
+                    help="Type new project ID and press Enter (or click 'Add') to register it.",
+                    key="new_project_id_input",
+                    on_change=handle_new_project_submit,
+                ).strip()
+            with col_add_btn:
+                st.markdown("<div style='margin-top: 1.75rem;'></div>", unsafe_allow_html=True)
+                if st.button("➕ Add", use_container_width=True, help="Immediately add this project ID to the dropdown list"):
+                    if new_project_input:
+                        if new_project_input not in st.session_state.available_projects:
+                            st.session_state.available_projects.append(new_project_input)
+                            st.session_state.available_projects.sort()
+                        st.session_state.selected_ingest_project = new_project_input
+                        st.rerun()
+                    else:
+                        st.warning("Please type a project ID first.")
+
+            # Automatically transfer browser focus from the dropdown to the new text input
+            components.html(
+                """
+                <script>
+                function focusTargetInput() {
+                    try {
+                        const doc = window.parent.document;
+                        if (!doc) return false;
+
+                        // 1. Blur any selectbox inputs so user isn't stuck typing in the dropdown search box
+                        const selectInputs = doc.querySelectorAll('div[data-testid="stSelectbox"] input, div[data-baseweb="select"] input');
+                        selectInputs.forEach(input => input.blur());
+
+                        // 2. Focus and select the New Project ID text input
+                        const targetInput = doc.querySelector('input[aria-label="New Project ID"]') ||
+                                            doc.querySelector('input[placeholder*="proj-marketing"]');
+                        if (targetInput) {
+                            targetInput.focus();
+                            targetInput.select();
+                            return true;
+                        }
+                    } catch (e) {
+                        // ignore cross-origin restriction if any
+                    }
+                    return false;
+                }
+
+                if (!focusTargetInput()) {
+                    let attempts = 0;
+                    const timer = setInterval(() => {
+                        attempts++;
+                        if (focusTargetInput() || attempts > 30) {
+                            clearInterval(timer);
+                        }
+                    }, 35);
+                }
+                </script>
+                """,
+                height=0,
+                width=0,
+            )
+
+            target_project_id = new_project_input
+            if not target_project_id:
+                st.caption("ℹ️ *Type the new project ID above and press Enter (or click 'Add') to register it.*")
+        else:
+            target_project_id = chosen_project
+            st.session_state.selected_ingest_project = chosen_project
 
         if st.button("🚀 Enqueue Meeting Ingestion", type="primary", use_container_width=True):
             if not link_input.strip():
                 st.warning("Please provide a valid meeting link.")
+            elif chosen_project == ADD_NEW_OPTION and not target_project_id:
+                st.warning("Please enter a valid Project ID for the new project.")
             else:
                 with st.spinner("Submitting link to backend for background ingestion..."):
                     res = api_client.ingest_link(
@@ -770,8 +975,14 @@ with tab_ingest:
                     )
 
                 if res.get("success"):
+                    # Add new project to session state if it's new
+                    if target_project_id and target_project_id not in st.session_state.available_projects:
+                        st.session_state.available_projects.append(target_project_id)
+                        st.session_state.available_projects.sort()
+                    st.session_state.selected_ingest_project = target_project_id
+
                     job_data = res.get("data", {})
-                    st.success("🎉 Meeting Link Successfully Accepted (HTTP 202 Accepted)!")
+                    st.success(f"🎉 Meeting Link Successfully Accepted for project **{target_project_id}** (HTTP 202 Accepted)!")
                     st.json(job_data)
                     st.info("The meeting is being processed asynchronously by FS-AI-Engine. Switch to 'Transcript Explorer' or refresh in a few moments to view new turns.")
                 else:
@@ -806,10 +1017,13 @@ with tab_explorer:
     if not meetings_list:
         st.info("No meetings found in the database. Ingest a meeting link above to get started.")
     else:
-        meeting_options_map = {
-            f"{m.get('title') or m['id']} ({m['id']}) - {m.get('total_turns', 0)} turns": m["id"]
-            for m in meetings_list
-        }
+        meeting_options_map = {}
+        for m in meetings_list:
+            m_title = m.get("title") or m["id"]
+            p_badge = f" • 📁 {m['project_id']}" if m.get("project_id") else ""
+            t_count = m.get("total_turns", 0)
+            label = f"{m_title} ({m['id']}){p_badge} - {t_count} turns"
+            meeting_options_map[label] = m["id"]
         selected_label = st.selectbox("Select Meeting to Inspect", list(meeting_options_map.keys()))
         selected_m_id = meeting_options_map[selected_label]
 
@@ -820,7 +1034,11 @@ with tab_explorer:
             if meeting_details:
                 turns = meeting_details.get("turns", [])
                 st.markdown(f"### {meeting_details.get('title', selected_m_id)}")
-                st.caption(f"**Meeting ID:** `{selected_m_id}` | **Status:** `{meeting_details.get('status', 'PROCESSED')}` | **Total Turns:** `{len(turns)}`")
+                proj_tag = meeting_details.get('project_id') or 'None'
+                m_summary = meeting_details.get("summary")
+                if m_summary and m_summary.strip():
+                    with st.expander("📝 **Executive Meeting Summary**", expanded=True):
+                        st.markdown(m_summary)
 
                 # Turn search filter
                 search_query = st.text_input("🔍 Filter turns by text or speaker name:", "").strip().lower()
