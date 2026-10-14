@@ -1,10 +1,19 @@
 import asyncio
+import json
 import logging
-from typing import Optional, Dict, Any, List
+from pathlib import Path
+from typing import Any
+
 import httpx
+
 from ..core.config import Settings, get_settings
 
 logger = logging.getLogger(__name__)
+
+# Root transcripts directory (/Meeting-Transcription/transcripts)
+ROOT_DIR = Path(__file__).resolve().parents[3]
+TRANSCRIPTS_DIR = ROOT_DIR / "transcripts"
+
 
 TRANSCRIPT_QUERY = """
 query GetTranscript($transcriptId: String!) {
@@ -53,7 +62,7 @@ mutation UploadAudio($input: AudioUploadInput!) {
 
 class FirefliesAPIError(Exception):
     """Exception raised when Fireflies API call or GraphQL operation fails."""
-    def __init__(self, message: str, status_code: Optional[int] = None, details: Optional[Any] = None):
+    def __init__(self, message: str, status_code: int | None = None, details: Any | None = None):
         super().__init__(message)
         self.message = message
         self.status_code = status_code
@@ -62,6 +71,25 @@ class FirefliesAPIError(Exception):
     def __str__(self) -> str:
         code_str = f" [HTTP {self.status_code}]" if self.status_code else ""
         return f"FirefliesAPIError{code_str}: {self.message}"
+
+
+def save_transcript_to_file(transcript_data: dict[str, Any], meeting_id: str) -> Path | None:
+    """
+    Save raw Fireflies transcript dictionary as a JSON file in the root transcripts/ directory.
+    """
+    if not transcript_data:
+        return None
+    try:
+        TRANSCRIPTS_DIR.mkdir(parents=True, exist_ok=True)
+        safe_id = "".join(c if c.isalnum() or c in ("-", "_", ".") else "_" for c in str(meeting_id))
+        file_path = TRANSCRIPTS_DIR / f"{safe_id}.json"
+        with open(file_path, "w", encoding="utf-8") as f:
+            json.dump(transcript_data, f, indent=2, ensure_ascii=False)
+        logger.info(f"Saved raw Fireflies transcript JSON to {file_path}")
+        return file_path
+    except Exception as exc:
+        logger.error(f"Failed to save transcript JSON for '{meeting_id}': {exc}", exc_info=True)
+        return None
 
 
 class FirefliesClient:
@@ -74,9 +102,9 @@ class FirefliesClient:
 
     def __init__(
         self,
-        settings: Optional[Settings] = None,
-        api_key: Optional[str] = None,
-        api_url: Optional[str] = None,
+        settings: Settings | None = None,
+        api_key: str | None = None,
+        api_url: str | None = None,
         timeout: float = 45.0,
     ):
         self.settings = settings or get_settings()
@@ -87,10 +115,10 @@ class FirefliesClient:
     async def _execute_graphql(
         self,
         query: str,
-        variables: Dict[str, Any],
+        variables: dict[str, Any],
         max_retries: int = 3,
         initial_backoff: float = 1.0,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """Executes a GraphQL query or mutation with exponential backoff retries."""
         if not self.api_key or not self.api_key.strip():
             raise FirefliesAPIError("FIREFLIES_API_KEY is not configured in backend.", status_code=401)
@@ -125,7 +153,7 @@ class FirefliesClient:
                     )
 
                 data = response.json()
-                if "errors" in data and data["errors"]:
+                if data.get("errors"):
                     err_msg = "; ".join([e.get("message", "Unknown error") for e in data["errors"]])
                     raise FirefliesAPIError(
                         f"GraphQL Error from Fireflies: {err_msg}",
@@ -139,7 +167,7 @@ class FirefliesClient:
                 if attempt >= max_retries:
                     logger.error(f"Fireflies API network failure after {max_retries} attempts: {exc}")
                     raise FirefliesAPIError(
-                        f"Connection to Fireflies API failed after {max_retries} retries: {str(exc)}",
+                        f"Connection to Fireflies API failed after {max_retries} retries: {exc!s}",
                         status_code=504 if isinstance(exc, httpx.TimeoutException) else 503,
                     ) from exc
                 logger.warning(f"Network error on attempt {attempt}/{max_retries}: {exc}. Retrying in {backoff}s...")
@@ -148,7 +176,7 @@ class FirefliesClient:
 
         raise FirefliesAPIError("Max retries exceeded communicating with Fireflies.", status_code=500)
 
-    async def fetch_transcript_by_id(self, transcript_id: str) -> Dict[str, Any]:
+    async def fetch_transcript_by_id(self, transcript_id: str) -> dict[str, Any]:
         """
         Query Fireflies GraphQL endpoint for a complete meeting transcript.
 
@@ -163,6 +191,9 @@ class FirefliesClient:
         transcript_data = data.get("transcript")
         if not transcript_data:
             raise FirefliesAPIError(f"Transcript with ID '{transcript_id}' not found in Fireflies.", status_code=404)
+
+        # Save raw transcript JSON to root transcripts/ directory upon ingestion
+        save_transcript_to_file(transcript_data, transcript_id)
 
         sentences = transcript_data.get("sentences", []) or []
         speakers = transcript_data.get("speakers", []) or []
@@ -188,7 +219,7 @@ class FirefliesClient:
             "raw_payload": transcript_data,
         }
 
-    async def upload_audio_from_url(self, audio_url: str, title: Optional[str] = None) -> Dict[str, Any]:
+    async def upload_audio_from_url(self, audio_url: str, title: str | None = None) -> dict[str, Any]:
         """
         Submit an external raw media recording URL (mp3, wav, mp4, m4a) to Fireflies for async transcription.
 

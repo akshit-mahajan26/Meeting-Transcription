@@ -1,53 +1,27 @@
-# ==============================================================================
-# Byte-compiled / optimized / DLL files
-# ==============================================================================
+# Bytecode & Caches
 __pycache__/
 *.py[cod]
-*$py.class
-*.so
 
-# ==============================================================================
-# Virtual Environments
-# ==============================================================================
+# Virtual Environment
 .venv/
-venv/
-env/
-ENV/
-.uv/
 
-# ==============================================================================
-# Environment & Secrets (NEVER commit secrets or API keys)
-# ==============================================================================
+# Environment Variables
 .env
 .env.*
-*.env
 !.env.example
 
-# Streamlit secrets (keep config.toml, ignore secrets.toml)
+# Streamlit Secrets
 .streamlit/secrets.toml
 
-# ==============================================================================
-# Tests, Test Suites, Coverage & Linters
-# ==============================================================================
+# Tests & Caches
+tests/
 .pytest_cache/
-.coverage
-.coverage.*
-htmlcov/
-.mypy_cache/
-.ruff_cache/
 
-# ==============================================================================
-# OS / IDE Artifacts
-# ==============================================================================
-.DS_Store
-Thumbs.db
-.vscode/
-.idea/
-
-# ==============================================================================
-# Databases & Local Logs
-# ==============================================================================
+# Logs & Databases
 *.log
 *.db
-*.sqlite
-*.sqlite3
+
+# OS & Editor
+.DS_Store
+.vscode/
+.idea/

@@ -1,8 +1,8 @@
 from functools import lru_cache
 from pathlib import Path
-from typing import Optional
+
 from dotenv import load_dotenv
-from pydantic import Field, AliasChoices
+from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # Determine parent directories for environment file resolution
@@ -23,32 +23,21 @@ class Settings(BaseSettings):
     ai_engine_port: int = Field(default=8001)
     ai_engine_env: str = Field(default="development")
 
-    # Fireflies API & Webhook Configuration
-    FIREFLIES_API_KEY: Optional[str] = Field(
-        default=None,
-        validation_alias=AliasChoices("FIREFLIES_API_KEY", "fireflies_api_key"),
-        description="API Key for Fireflies.ai GraphQL API",
-    )
-    FIREFLIES_API_URL: str = Field(
-        default="https://api.fireflies.ai/graphql",
-        validation_alias=AliasChoices("FIREFLIES_API_URL", "fireflies_api_url"),
-        description="Endpoint URL for Fireflies.ai GraphQL queries",
-    )
-    FIREFLIES_WEBHOOK_SECRET: str = Field(
-        default="super_secret_webhook_key_12345",
-        validation_alias=AliasChoices("FIREFLIES_WEBHOOK_SECRET", "fireflies_webhook_secret"),
-        description="HMAC SHA-256 secret for verifying incoming webhooks",
-    )
-    fireflies_timeout_seconds: float = Field(default=45.0)
-
     # Database Configuration (PostgreSQL with asyncpg for Phase 3 & 4)
     database_url: str = Field(
-        default="postgresql+asyncpg://postgres:postgres@localhost:5432/meeting_intelligence",
-        description="Async PostgreSQL connection string using asyncpg driver",
+        validation_alias=AliasChoices("DATABASE_URL", "database_url"),
+        description="Async PostgreSQL connection string (must be provided via environment or .env)",
+    )
+
+    # Internal API key: only FS-backend (which verifies user logins) may call this engine
+    engine_api_key: str = Field(
+        validation_alias=AliasChoices("ENGINE_API_KEY", "engine_api_key"),
+        min_length=16,
+        description="Shared secret expected in the X-Internal-Api-Key header (must be provided via environment or .env)",
     )
 
     # Gemini API & Universal LLM Configuration
-    GEMINI_API_KEY: Optional[str] = Field(
+    GEMINI_API_KEY: str | None = Field(
         default=None,
         validation_alias=AliasChoices("GEMINI_API_KEY", "gemini_api_key", "GOOGLE_API_KEY"),
         description="Google Gemini universal API key",
@@ -59,31 +48,11 @@ class Settings(BaseSettings):
         description="Gemini OpenAI-compatible API Base URL",
     )
 
-    # OpenRouter API & Universal LLM Configuration
-    OPENROUTER_API_KEY: Optional[str] = Field(
-        default=None,
-        validation_alias=AliasChoices("OPENROUTER_API_KEY", "openrouter_api_key"),
-        description="OpenRouter universal API key",
-    )
-    OPENROUTER_BASE_URL: str = Field(
-        default="https://openrouter.ai/api/v1",
-        validation_alias=AliasChoices("OPENROUTER_BASE_URL", "openrouter_base_url"),
-        description="OpenRouter API Base URL",
-    )
-    OPENROUTER_REFERER: str = Field(
-        default="http://localhost:8000",
-        description="Site URL for OpenRouter ranking header",
-    )
-    OPENROUTER_TITLE: str = Field(
-        default="Meeting-Transcription-Intelligence-Platform",
-        description="Site title for OpenRouter ranking header",
-    )
-
-    # Default LLM Model
+    # Default LLM Model (Google Gemini)
     LLM_MODEL_NAME: str = Field(
         default="gemini-2.5-flash",
         validation_alias=AliasChoices("LLM_MODEL_NAME", "LLM_MODEL", "llm_model"),
-        description="Primary LLM model string (e.g. gemini-2.5-flash, gemini-2.0-flash, or openai/gpt-4o-mini)",
+        description="Primary LLM model string (e.g. gemini-2.5-flash, gemini-2.0-flash)",
     )
     llm_temperature: float = Field(
         default=0.0,
@@ -124,18 +93,10 @@ class Settings(BaseSettings):
     min_turns_per_segment: int = Field(default=2)
     max_turns_per_segment: int = Field(default=10)
     llm_provider: str = Field(default="openrouter")
-    llm_api_key: Optional[str] = Field(default=None)
+    llm_api_key: str | None = Field(default=None)
 
     @property
-    def fireflies_api_key(self) -> Optional[str]:
-        return self.FIREFLIES_API_KEY
-
-    @property
-    def fireflies_api_url(self) -> str:
-        return self.FIREFLIES_API_URL
-
-    @property
-    def openrouter_api_key(self) -> Optional[str]:
+    def openrouter_api_key(self) -> str | None:
         return self.OPENROUTER_API_KEY
 
     @property
@@ -171,12 +132,8 @@ class Settings(BaseSettings):
         return self.database_url
 
     @property
-    def is_openrouter_configured(self) -> bool:
-        return bool(self.OPENROUTER_API_KEY and self.OPENROUTER_API_KEY.strip())
-
-    @property
-    def is_fireflies_configured(self) -> bool:
-        return bool(self.FIREFLIES_API_KEY and self.FIREFLIES_API_KEY.strip())
+    def is_gemini_configured(self) -> bool:
+        return bool(self.GEMINI_API_KEY and self.GEMINI_API_KEY.strip())
 
     model_config = SettingsConfigDict(
         env_file=[str(ENGINE_DIR / ".env"), ".env"],
@@ -185,7 +142,7 @@ class Settings(BaseSettings):
     )
 
 
-@lru_cache()
+@lru_cache
 def get_settings() -> Settings:
     """Return cached singleton instance of Settings."""
     return Settings()

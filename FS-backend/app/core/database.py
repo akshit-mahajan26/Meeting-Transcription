@@ -1,8 +1,25 @@
 import json
-from datetime import datetime, timezone
-from typing import Generator, List, Optional
-from sqlalchemy import create_engine, Column, String, Float, Integer, Text, DateTime, ForeignKey, Boolean
-from sqlalchemy.orm import declarative_base, sessionmaker, relationship, Session
+import logging
+import os
+import uuid
+from collections.abc import Generator
+from datetime import UTC, datetime
+
+from sqlalchemy import (
+    Boolean,
+    Column,
+    Computed,
+    DateTime,
+    Float,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    Text,
+    create_engine,
+    inspect,
+)
+from sqlalchemy.orm import Session, declarative_base, relationship, sessionmaker
 
 try:
     from pgvector.sqlalchemy import Vector
@@ -10,9 +27,10 @@ except ImportError:
     Vector = None
 
 try:
-    from sqlalchemy.dialects.postgresql import JSONB
+    from sqlalchemy.dialects.postgresql import JSONB, TSVECTOR
 except ImportError:
     from sqlalchemy import JSON as JSONB
+    TSVECTOR = Text
 
 from .config import get_settings
 
@@ -20,17 +38,36 @@ settings = get_settings()
 
 
 def utc_now():
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 # Engine configuration
+db_url = os.getenv("DATABASE_URL") or settings.database_url
+if not db_url:
+    raise RuntimeError("DATABASE_URL environment variable is required. Please configure it in your environment or .env file.")
+
 engine = create_engine(
-    settings.database_url,
-    connect_args={"check_same_thread": False} if "sqlite" in settings.database_url else {},
+    db_url,
+    connect_args={"check_same_thread": False} if "sqlite" in db_url else {},
 )
 
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
+
+
+def _owner_column() -> Column:
+    """Owning account; every row of every data table belongs to exactly one user."""
+    return Column(String(36), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+
+
+class UserModel(Base):
+    """Account that owns projects, meetings, topics and speaker turns."""
+    __tablename__ = "users"
+
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    email = Column(String(255), unique=True, nullable=False, index=True)
+    password_hash = Column(String(255), nullable=False)
+    created_at = Column(DateTime, default=utc_now, nullable=False)
 
 
 class ProjectModel(Base):
@@ -38,6 +75,7 @@ class ProjectModel(Base):
     __tablename__ = "projects"
 
     id = Column(String(100), primary_key=True, index=True)
+    user_id = _owner_column()
     name = Column(String(255), nullable=False)
     status = Column(String(50), default="ACTIVE", nullable=False)
     created_at = Column(DateTime, default=utc_now, nullable=False)
@@ -50,6 +88,7 @@ class MeetingModel(Base):
     __tablename__ = "meetings"
 
     id = Column(String(100), primary_key=True, index=True)
+    user_id = _owner_column()
     project_id = Column(String(100), ForeignKey("projects.id", ondelete="SET NULL"), nullable=True, index=True)
     title = Column(String(255), nullable=True)
     summary = Column(Text, nullable=True)
@@ -84,6 +123,7 @@ class MeetingTopicModel(Base):
     __tablename__ = "meeting_topics"
 
     id = Column(String(100), primary_key=True, index=True)
+    user_id = _owner_column()
     meeting_id = Column(String(100), ForeignKey("meetings.id", ondelete="CASCADE"), nullable=False, index=True)
     topic_index = Column(Integer, nullable=False)
     title = Column(String(255), nullable=False)
@@ -100,6 +140,7 @@ class SpeakerTurnModel(Base):
     __tablename__ = "speaker_turns"
 
     turn_id = Column(String(150), primary_key=True, index=True)  # mtg_<id>_turn_<NNN>
+    user_id = _owner_column()
     meeting_id = Column(String(100), ForeignKey("meetings.id", ondelete="CASCADE"), nullable=False, index=True)
     topic_id = Column(String(100), ForeignKey("meeting_topics.id", ondelete="SET NULL"), nullable=True, index=True)
     turn_number = Column(Integer, nullable=False)
@@ -115,12 +156,30 @@ class SpeakerTurnModel(Base):
     _sentence_indices = Column("sentence_indices", Text, default="[]", nullable=False)
     embedding = Column(Vector(1536), nullable=True) if Vector is not None else Column(Text, nullable=True)
     meta_data = Column("metadata", JSONB, nullable=True, default=dict)
+    tsv = Column(
+        TSVECTOR,
+        Computed(
+            "to_tsvector('english', coalesce(speaker_name, '') || ' ' || coalesce(text, ''))",
+            persisted=True,
+        ),
+        nullable=True,
+    )
+
+    __table_args__ = (
+        Index("idx_speaker_turns_tsv", "tsv", postgresql_using="gin"),
+        Index(
+            "idx_speaker_turns_embedding_hnsw",
+            "embedding",
+            postgresql_using="hnsw",
+            postgresql_ops={"embedding": "vector_cosine_ops"},
+        ),
+    )
 
     meeting = relationship("MeetingModel", back_populates="turns")
     topic = relationship("MeetingTopicModel", back_populates="turns")
 
     @property
-    def sentence_indices(self) -> List[int]:
+    def sentence_indices(self) -> list[int]:
         if not self._sentence_indices:
             return []
         try:
@@ -129,12 +188,31 @@ class SpeakerTurnModel(Base):
             return []
 
     @sentence_indices.setter
-    def sentence_indices(self, val: List[int]):
+    def sentence_indices(self, val: list[int]):
         self._sentence_indices = json.dumps(val or [])
 
 
+BASELINE_REVISION = "e0d6e74c6561"
+
+
+def _is_unversioned_legacy_schema() -> bool:
+    """True when the app tables already exist but Alembic has never recorded a version.
+
+    That is a database created by the old create_all-based startup. Running the baseline
+    migration on it would fail with "relation already exists".
+    """
+    from .schema_versioning import _get_comment_heads
+
+    with engine.begin() as conn:
+        inspector = inspect(conn)
+        has_tables = inspector.has_table("projects")
+        has_version_table = inspector.has_table("alembic_version")
+        has_version = bool(_get_comment_heads(conn))
+    return has_tables and not has_version and not has_version_table
+
+
 def init_db() -> None:
-    """Initialize database tables for all 4 tiers and run lightweight auto-migrations."""
+    """Initialize database tables and run pending Alembic migrations."""
     # Ensure vector extension is enabled in PostgreSQL before table creation
     try:
         from sqlalchemy import text
@@ -142,57 +220,31 @@ def init_db() -> None:
             conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
             conn.commit()
     except Exception:
-        pass
+        logging.getLogger(__name__).warning("Could not enable the pgvector extension.", exc_info=True)
 
-    Base.metadata.create_all(bind=engine)
-
-    # Lightweight auto-migration for newly added columns across tiers
     try:
-        from sqlalchemy import text, inspect
-        inspector = inspect(engine)
-        
-        if inspector.has_table("meetings"):
-            existing_cols = {col["name"] for col in inspector.get_columns("meetings")}
-            with engine.connect() as conn:
-                if "project_id" not in existing_cols:
-                    conn.execute(text("ALTER TABLE meetings ADD COLUMN project_id VARCHAR(100)"))
-                if "summary" not in existing_cols:
-                    conn.execute(text("ALTER TABLE meetings ADD COLUMN summary TEXT"))
-                if "content_hash" not in existing_cols:
-                    conn.execute(text("ALTER TABLE meetings ADD COLUMN content_hash VARCHAR(64)"))
-                conn.commit()
+        from pathlib import Path
 
-        if inspector.has_table("speaker_turns"):
-            existing_cols = {col["name"] for col in inspector.get_columns("speaker_turns")}
-            with engine.connect() as conn:
-                if "topic_id" not in existing_cols:
-                    conn.execute(text("ALTER TABLE speaker_turns ADD COLUMN topic_id VARCHAR(100)"))
-                if "metadata" not in existing_cols:
-                    conn.execute(text("ALTER TABLE speaker_turns ADD COLUMN metadata JSONB"))
-                if "embedding" not in existing_cols:
-                    try:
-                        conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
-                        conn.execute(text("ALTER TABLE speaker_turns ADD COLUMN embedding vector(1536)"))
-                    except Exception:
-                        pass
-                if "tsv" not in existing_cols:
-                    try:
-                        conn.execute(text(
-                            "ALTER TABLE speaker_turns ADD COLUMN tsv tsvector "
-                            "GENERATED ALWAYS AS ("
-                            "to_tsvector('english', coalesce(speaker_name, '') || ' ' || coalesce(text, ''))"
-                            ") STORED"
-                        ))
-                    except Exception:
-                        pass
-                try:
-                    conn.execute(text("CREATE INDEX IF NOT EXISTS idx_speaker_turns_tsv ON speaker_turns USING gin (tsv)"))
-                    conn.execute(text("CREATE INDEX IF NOT EXISTS idx_speaker_turns_embedding_hnsw ON speaker_turns USING hnsw (embedding vector_cosine_ops)"))
-                except Exception:
-                    pass
-                conn.commit()
+        from alembic import command
+        from alembic.config import Config
+
+        from .schema_versioning import install_schema_comment_versioning
+
+        install_schema_comment_versioning()
+        alembic_ini_path = Path(__file__).resolve().parent.parent.parent / "alembic.ini"
+        if alembic_ini_path.exists():
+            alembic_cfg = Config(str(alembic_ini_path))
+            if _is_unversioned_legacy_schema():
+                # Tables built by the pre-Alembic startup code already match the baseline revision.
+                command.stamp(alembic_cfg, BASELINE_REVISION)
+            command.upgrade(alembic_cfg, "head")
+        else:
+            Base.metadata.create_all(bind=engine)
     except Exception:
-        pass
+        # Never fall back to create_all here: it cannot alter existing tables, so the app
+        # would start against a half-migrated schema and fail on every query.
+        logging.getLogger(__name__).exception("Database migration failed; refusing to start.")
+        raise
 
 
 def get_db() -> Generator[Session, None, None]:

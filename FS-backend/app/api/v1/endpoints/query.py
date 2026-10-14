@@ -5,6 +5,6 @@ Transparent API Gateway Proxy forwarding client queries to FS-AI-Engine.
 Zero direct vector retrieval, database calls, or LLM code.
 """
 
-from ...routers.query import router, QueryRequest, QueryResponse
+from ...routers.query import QueryRequest, QueryResponse, router
 
-__all__ = ["router", "QueryRequest", "QueryResponse"]
+__all__ = ["QueryRequest", "QueryResponse", "router"]

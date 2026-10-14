@@ -1,37 +1,46 @@
 import logging
-from typing import AsyncGenerator, Dict, Any, List, Optional
+import os
+from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
-from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
+from typing import Any
+
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+
 from .config import settings
 
 logger = logging.getLogger(__name__)
 
-# Create async engine dynamically from settings.database_url
-db_url = settings.database_url
-if db_url.startswith("postgresql://"):
-    db_url = db_url.replace("postgresql://", "postgresql+asyncpg://", 1)
-elif db_url.startswith("postgres://"):
-    db_url = db_url.replace("postgres://", "postgresql+asyncpg://", 1)
+# Create async engine dynamically from environment or settings.database_url
+db_url = os.getenv("DATABASE_URL") or settings.database_url
+if db_url:
+    if db_url.startswith("postgresql://"):
+        db_url = db_url.replace("postgresql://", "postgresql+asyncpg://", 1)
+    elif db_url.startswith("postgres://"):
+        db_url = db_url.replace("postgres://", "postgresql+asyncpg://", 1)
 
-if "sslmode=" in db_url:
-    db_url = db_url.replace("sslmode=", "ssl=")
+    if "sslmode=" in db_url:
+        db_url = db_url.replace("sslmode=", "ssl=")
 
-try:
-    async_engine = create_async_engine(
-        db_url,
-        echo=False,
-        pool_pre_ping=True,
-        future=True,
-    )
-    AsyncSessionLocal = async_sessionmaker(
-        bind=async_engine,
-        class_=AsyncSession,
-        expire_on_commit=False,
-        autocommit=False,
-        autoflush=False,
-    )
-except Exception as e:
-    logger.warning(f"Could not initialize async_engine ({e}). Falling back to mock session.")
+    try:
+        async_engine = create_async_engine(
+            db_url,
+            echo=False,
+            pool_pre_ping=True,
+            future=True,
+        )
+        AsyncSessionLocal = async_sessionmaker(
+            bind=async_engine,
+            class_=AsyncSession,
+            expire_on_commit=False,
+            autocommit=False,
+            autoflush=False,
+        )
+    except Exception as e:
+        logger.warning(f"Could not initialize async_engine ({e}). Falling back to mock session.")
+        async_engine = None
+        AsyncSessionLocal = None
+else:
+    logger.warning("DATABASE_URL is not configured. Async database engine disabled.")
     async_engine = None
     AsyncSessionLocal = None
 
@@ -59,7 +68,7 @@ class DatabaseSessionManager:
     """
 
     def __init__(self):
-        self._in_memory_records: Dict[str, Dict[str, Any]] = {
+        self._in_memory_records: dict[str, dict[str, Any]] = {
             "projects": {},
             "meetings": {},
             "topics": {},
@@ -67,7 +76,7 @@ class DatabaseSessionManager:
         }
 
     @asynccontextmanager
-    async def get_session(self) -> AsyncGenerator[Optional[AsyncSession], None]:
+    async def get_session(self) -> AsyncGenerator[AsyncSession | None, None]:
         if AsyncSessionLocal is not None:
             try:
                 async with AsyncSessionLocal() as session:
@@ -77,7 +86,7 @@ class DatabaseSessionManager:
                 logger.warning(f"Async session error ({e}); operating via in-memory store.")
         yield None
 
-    def get_in_memory_records(self) -> Dict[str, Dict[str, Any]]:
+    def get_in_memory_records(self) -> dict[str, dict[str, Any]]:
         return self._in_memory_records
 
 

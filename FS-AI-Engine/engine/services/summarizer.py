@@ -1,10 +1,12 @@
-import re
 import json
 import logging
-from typing import List, Dict, Optional, Any, Set
+import re
+from typing import Any, ClassVar
+
 import httpx
-from ..core.settings import get_settings, Settings
-from ..models.schemas import SpeakerTurn, TopicSegment, Level3Summary, GroundedItem
+
+from ..core.config import Settings, get_settings
+from ..models.schemas import GroundedItem, Level3Summary, SpeakerTurn, TopicSegment
 
 logger = logging.getLogger(__name__)
 
@@ -12,7 +14,7 @@ logger = logging.getLogger(__name__)
 class MeetingSummarizer:
     """
     Level 3 Meeting Intelligence Extractor.
-    
+
     Generates executive summary nodes (mtg_<id>_sum) with structured intelligence:
     - Executive Overview
     - Ratified Decisions (strictly grounded to Level 1 turn IDs)
@@ -22,13 +24,13 @@ class MeetingSummarizer:
     Supports structured LLM extraction when API keys are configured, with automatic failover to deterministic heuristic grounding.
     """
 
-    DECISION_PATTERNS = [
+    DECISION_PATTERNS: ClassVar[list[re.Pattern]] = [
         re.compile(r"\b(decided to|we decided|decision is|agreed to|agreed that|approved)\b", re.IGNORECASE),
         re.compile(r"\b(we will go with|the consensus is|settled on|final choice)\b", re.IGNORECASE),
         re.compile(r"\b(let's proceed with|moving forward with|conclusion is)\b", re.IGNORECASE),
     ]
 
-    def __init__(self, settings: Optional[Settings] = None):
+    def __init__(self, settings: Settings | None = None):
         self.settings = settings or get_settings()
         self.llm_api_key = self.settings.llm_api_key
         self.llm_model = self.settings.llm_model
@@ -36,9 +38,9 @@ class MeetingSummarizer:
     def generate_intelligence(
         self,
         meeting_id: str,
-        turns: List[SpeakerTurn],
-        segments: Optional[List[TopicSegment]] = None,
-        title: Optional[str] = None,
+        turns: list[SpeakerTurn],
+        segments: list[TopicSegment] | None = None,
+        title: str | None = None,
     ) -> Level3Summary:
         """
         Generate Level 3 meeting intelligence node strictly grounded to Level 1 source chunk IDs.
@@ -87,15 +89,15 @@ class MeetingSummarizer:
         self,
         summary_id: str,
         meeting_id: str,
-        turns: List[SpeakerTurn],
-        segments: Optional[List[TopicSegment]],
-        title: Optional[str],
+        turns: list[SpeakerTurn],
+        segments: list[TopicSegment] | None,
+        title: str | None,
     ) -> Level3Summary:
         """Deterministic grounding engine identifying ratified items and linking to Level 1 turns."""
         participants = list(dict.fromkeys(t.speaker_name for t in turns if t.speaker_name))
 
         # Decisions
-        decisions: List[GroundedItem] = []
+        decisions: list[GroundedItem] = []
         for t in turns:
             for pat in self.DECISION_PATTERNS:
                 if pat.search(t.text):
@@ -110,7 +112,7 @@ class MeetingSummarizer:
                     break
 
         # Commitments
-        commitments: List[GroundedItem] = []
+        commitments: list[GroundedItem] = []
         for t in turns:
             if t.is_commitment:
                 clean_commitment = self._clean_statement(t.text)
@@ -124,7 +126,7 @@ class MeetingSummarizer:
                 )
 
         # Blockers
-        blockers: List[GroundedItem] = []
+        blockers: list[GroundedItem] = []
         for t in turns:
             if t.is_blocker:
                 clean_blocker = self._clean_statement(t.text)
@@ -169,10 +171,10 @@ class MeetingSummarizer:
     def _extract_via_llm(
         self,
         meeting_id: str,
-        turns: List[SpeakerTurn],
-        segments: Optional[List[TopicSegment]],
-        title: Optional[str],
-    ) -> Optional[Dict[str, Any]]:
+        turns: list[SpeakerTurn],
+        segments: list[TopicSegment] | None,
+        title: str | None,
+    ) -> dict[str, Any] | None:
         """Call structured LLM endpoint via HTTP request with schema enforcement and timeout handling."""
         turns_context = "\n".join(
             [f"[{t.turn_id}] {t.speaker_name}: {t.text}" for t in turns]
@@ -180,7 +182,7 @@ class MeetingSummarizer:
 
         system_prompt = (
             """
-            You are an expert executive meeting analyst. Extract the executive overview, ratified decisions,action commitments, and blockers from the transcript. 
+            You are an expert executive meeting analyst. Extract the executive overview, ratified decisions,action commitments, and blockers from the transcript.
             CRITICAL: Every extracted decision, commitment, and blocker MUST cite the exact source Level 1 turn ID (e.g. mtg_<id>_turn_<NNN>) in `source_chunk_ids`.
             """
         )
@@ -226,20 +228,20 @@ class MeetingSummarizer:
         self,
         summary_id: str,
         meeting_id: str,
-        title: Optional[str],
-        data: Dict[str, Any],
-        turns: List[SpeakerTurn],
-        segments: Optional[List[TopicSegment]],
+        title: str | None,
+        data: dict[str, Any],
+        turns: list[SpeakerTurn],
+        segments: list[TopicSegment] | None,
     ) -> Level3Summary:
         """
         Validate that every source_chunk_id returned by the LLM maps to a genuine Level 1 turn ID.
         Discards hallucinated IDs and ensures strict Pydantic model validity.
         """
-        valid_turn_ids: Set[str] = {t.turn_id for t in turns}
+        valid_turn_ids: set[str] = {t.turn_id for t in turns}
         fallback_turn_id = turns[0].turn_id if turns else ""
 
-        def clean_items(raw_items: List[Dict[str, Any]], default_cat: str) -> List[GroundedItem]:
-            grounded: List[GroundedItem] = []
+        def clean_items(raw_items: list[dict[str, Any]], default_cat: str) -> list[GroundedItem]:
+            grounded: list[GroundedItem] = []
             for item in raw_items:
                 raw_ids = item.get("source_chunk_ids", [])
                 valid_ids = [cid for cid in raw_ids if cid in valid_turn_ids]
@@ -287,10 +289,10 @@ class MeetingSummarizer:
     def _synthesize_overview(
         self,
         meeting_id: str,
-        turns: List[SpeakerTurn],
-        segments: Optional[List[TopicSegment]],
-        title: Optional[str],
-        participants: List[str],
+        turns: list[SpeakerTurn],
+        segments: list[TopicSegment] | None,
+        title: str | None,
+        participants: list[str],
     ) -> str:
         """Create structured executive overview."""
         title_str = title or f"Meeting '{meeting_id}'"

@@ -1,19 +1,15 @@
-import json
-from typing import List, Optional
-from fastapi import APIRouter, Depends, HTTPException, status
+
+from fastapi import APIRouter, Depends, status
 from sqlalchemy.orm import Session
-from ....core.database import get_db
+
+from ....api.deps import get_current_user
 from ....core.config import Settings, get_settings
-from ....core.security import verify_hmac_sha256_signature
+from ....core.database import UserModel, get_db
 from ....schemas.models import (
-    MeetingResponse,
     MeetingListResponse,
+    MeetingResponse,
     ProjectListResponse,
     SpeakerTurnResponse,
-    RawTranscriptIngestRequest,
-    FetchMeetingIngestRequest,
-    WebhookResponse,
-    FirefliesWebhookPayload,
 )
 from ....services.meeting_service import MeetingService
 
@@ -22,83 +18,11 @@ router = APIRouter()
 
 def get_meeting_service(
     db: Session = Depends(get_db),
+    user: UserModel = Depends(get_current_user),
     settings: Settings = Depends(get_settings),
 ) -> MeetingService:
-    """Dependency provider for MeetingService."""
-    return MeetingService(db=db, settings=settings)
-
-
-@router.post(
-    "/webhook",
-    response_model=WebhookResponse,
-    status_code=status.HTTP_200_OK,
-    summary="Fireflies.ai Webhook Handler (HMAC Protected)",
-    description="Receives transcription completion notifications from Fireflies. Protected by HMAC-SHA256 signature verification.",
-)
-async def handle_fireflies_webhook(
-    raw_body: bytes = Depends(verify_hmac_sha256_signature),
-    service: MeetingService = Depends(get_meeting_service),
-) -> WebhookResponse:
-    """
-    HMAC-verified webhook handler.
-    1. HMAC-SHA256 signature is verified by the dependency.
-    2. Body is decoded into JSON payload.
-    3. Delegated to MeetingService for processing.
-    """
-    try:
-        payload_data = json.loads(raw_body.decode("utf-8")) if raw_body else {}
-    except Exception as exc:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Malformed JSON in webhook request body: {str(exc)}",
-        )
-
-    return service.handle_webhook_event(payload_data)
-
-
-@router.post(
-    "/webhook/fireflies",
-    response_model=WebhookResponse,
-    status_code=status.HTTP_200_OK,
-    summary="Fireflies Webhook & Manual Swagger Ingestion",
-    description="Allows manual upload or Swagger invocation of Fireflies webhook events without signature rejection.",
-)
-async def handle_fireflies_webhook_manual(
-    payload: FirefliesWebhookPayload,
-    service: MeetingService = Depends(get_meeting_service),
-) -> WebhookResponse:
-    """Manual/Swagger trigger for Fireflies webhook payloads."""
-    return service.handle_webhook_event(payload.model_dump())
-
-
-@router.post(
-    "/ingest/raw",
-    response_model=MeetingResponse,
-    status_code=status.HTTP_201_CREATED,
-    summary="Direct raw transcript ingestion",
-    description="Send raw transcript sentences directly to normalize into Level 1 turns and persist.",
-)
-def ingest_raw_transcript(
-    request: RawTranscriptIngestRequest,
-    service: MeetingService = Depends(get_meeting_service),
-) -> MeetingResponse:
-    """Thin route handler delegating to MeetingService.ingest_raw_transcript."""
-    return service.ingest_raw_transcript(request)
-
-
-@router.post(
-    "/ingest/fetch",
-    response_model=MeetingResponse,
-    status_code=status.HTTP_200_OK,
-    summary="Fetch and ingest transcript from Fireflies",
-    description="Instructs the AI Engine to query Fireflies GraphQL API by meeting ID and normalize the result.",
-)
-def ingest_by_fetching(
-    request: FetchMeetingIngestRequest,
-    service: MeetingService = Depends(get_meeting_service),
-) -> MeetingResponse:
-    """Thin route handler delegating to MeetingService.ingest_from_fireflies_api."""
-    return service.ingest_from_fireflies_api(request)
+    """Dependency provider for MeetingService, scoped to the logged-in account."""
+    return MeetingService(db=db, user_id=user.id, settings=settings)
 
 
 @router.get(
@@ -148,7 +72,7 @@ def get_meeting(
 
 @router.get(
     "/{meeting_id}/turns",
-    response_model=List[SpeakerTurnResponse],
+    response_model=list[SpeakerTurnResponse],
     status_code=status.HTTP_200_OK,
     summary="Get Level 1 speaker turns for a meeting",
     description="Returns the ordered list of normalized speaker turns (mtg_<id>_turn_<NNN>).",
@@ -156,6 +80,6 @@ def get_meeting(
 def get_meeting_turns(
     meeting_id: str,
     service: MeetingService = Depends(get_meeting_service),
-) -> List[SpeakerTurnResponse]:
+) -> list[SpeakerTurnResponse]:
     """Thin route handler returning Level 1 speaker turns for a meeting."""
     return service.get_meeting_turns(meeting_id)

@@ -3,18 +3,24 @@ import hashlib
 import json
 import logging
 import uuid
-from typing import Dict, Any, Optional, List
+from typing import Any
+
 import httpx
 from sqlalchemy.orm import Session
+
 from ..core.config import Settings, get_settings
-from ..core.database import SessionLocal, ProjectModel, MeetingModel, MeetingTopicModel, SpeakerTurnModel
+from ..core.database import (
+    MeetingModel,
+    MeetingTopicModel,
+    SessionLocal,
+    SpeakerTurnModel,
+)
+from .ownership import claim_project, get_owned_meeting
 
 logger = logging.getLogger(__name__)
 
-
 class PipelineOrchestratorError(Exception):
     """Exception raised when background ingestion orchestration fails."""
-    pass
 
 
 class BackendPipelineOrchestrator:
@@ -27,12 +33,15 @@ class BackendPipelineOrchestrator:
        projects -> meetings -> meeting_topics -> speaker_turns.
     """
 
-    def __init__(self, settings: Optional[Settings] = None):
+    def __init__(self, settings: Settings | None = None):
         self.settings = settings or get_settings()
-        self.ai_engine_url = self.settings.ai_engine_url.rstrip("/")
+        ai_base = (self.settings.ai_engine_url or "").rstrip("/")
+        ai_base = ai_base.removesuffix("/api/v1")
+        self.ai_engine_url = ai_base
+        self.engine_headers = {"X-Internal-Api-Key": self.settings.engine_api_key}
 
     @staticmethod
-    def compute_transcript_hash(sentences: List[Dict[str, Any]]) -> str:
+    def compute_transcript_hash(sentences: list[dict[str, Any]]) -> str:
         """Compute SHA-256 hash of transcript text content for idempotency detection."""
         hasher = hashlib.sha256()
         for s in sentences:
@@ -44,10 +53,10 @@ class BackendPipelineOrchestrator:
 
     async def _dispatch_to_ai_engine(
         self,
-        payload: Dict[str, Any],
+        payload: dict[str, Any],
         max_retries: int = 3,
         initial_backoff: float = 1.0,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """
         Dispatches raw transcript payload to FS-AI-Engine via HTTP with exponential backoff retries.
         """
@@ -64,10 +73,10 @@ class BackendPipelineOrchestrator:
             attempt += 1
             try:
                 async with httpx.AsyncClient(timeout=request_timeout) as client:
-                    resp = await client.post(target_url, json=payload)
+                    resp = await client.post(target_url, json=payload, headers=self.engine_headers)
                     if resp.status_code == 404:
                         # Fallback to normalize endpoint if process-full is not mounted
-                        resp = await client.post(fallback_url, json=payload)
+                        resp = await client.post(fallback_url, json=payload, headers=self.engine_headers)
 
                 if resp.status_code >= 500:
                     logger.warning(
@@ -100,10 +109,11 @@ class BackendPipelineOrchestrator:
 
     async def orchestrate_meeting_ingestion(
         self,
-        transcript_dict: Dict[str, Any],
-        project_id: Optional[str] = None,
-        custom_title: Optional[str] = None,
-    ) -> Dict[str, Any]:
+        transcript_dict: dict[str, Any],
+        user_id: str,
+        project_id: str | None = None,
+        custom_title: str | None = None,
+    ) -> dict[str, Any]:
         """
         Execute full asynchronous background ingestion workflow:
         1. Content hash checksum verification (idempotency).
@@ -112,6 +122,7 @@ class BackendPipelineOrchestrator:
 
         Args:
             transcript_dict: Parsed transcript dict with id, title, sentences, etc.
+            user_id: Account that owns the meeting (stamped on every row written).
             project_id: Target project identifier.
             custom_title: Optional title override.
 
@@ -132,13 +143,9 @@ class BackendPipelineOrchestrator:
         # 2. Check Database for Idempotency Hit
         db: Session = SessionLocal()
         try:
-            existing = db.query(MeetingModel).filter(
-                MeetingModel.id == meeting_id,
-                MeetingModel.content_hash == content_hash,
-                MeetingModel.status == "PROCESSED",
-            ).first()
+            existing = get_owned_meeting(db, user_id, meeting_id)
 
-            if existing:
+            if existing and existing.content_hash == content_hash and existing.status == "PROCESSED":
                 logger.info(f"Idempotency hit for meeting '{meeting_id}' (content_hash: {content_hash[:8]}). Skipping re-processing.")
                 return {
                     "status": "success",
@@ -211,17 +218,15 @@ class BackendPipelineOrchestrator:
         try:
             # Tier 1: Project
             if project_id:
-                proj = db.query(ProjectModel).filter(ProjectModel.id == project_id).first()
-                if not proj:
-                    proj = ProjectModel(id=project_id, name=f"Project {project_id}")
-                    db.add(proj)
-                    db.flush()
+                proj = claim_project(db, user_id, project_id)
+                project_id = proj.id
 
             # Tier 2: Meeting
-            meeting = db.query(MeetingModel).filter(MeetingModel.id == meeting_id).first()
+            meeting = get_owned_meeting(db, user_id, meeting_id)
             if not meeting:
                 meeting = MeetingModel(
                     id=meeting_id,
+                    user_id=user_id,
                     project_id=project_id,
                     title=title,
                     summary=summary_text,
@@ -246,13 +251,14 @@ class BackendPipelineOrchestrator:
                 db.flush()
 
             # Tier 3: Meeting Topics
-            topic_id_map: Dict[int, str] = {}
+            topic_id_map: dict[int, str] = {}
             for seg in level2_segments:
                 seg_idx = int(seg.get("segment_index") or seg.get("topic_index") or 1)
                 t_id = str(uuid.uuid4())
                 topic_id_map[seg_idx] = t_id
                 topic_rec = MeetingTopicModel(
                     id=t_id,
+                    user_id=user_id,
                     meeting_id=meeting_id,
                     topic_index=seg_idx,
                     title=seg.get("title") or seg.get("topic_name") or f"Topic {seg_idx}",
@@ -266,7 +272,7 @@ class BackendPipelineOrchestrator:
 
             # Tier 4: Speaker Turns with Embeddings and Rich Metadata
             def _fmt_ts(sec: float) -> str:
-                s = max(0, int(round(float(sec or 0.0))))
+                s = max(0, round(float(sec or 0.0)))
                 return f"{s // 3600:02d}:{(s % 3600) // 60:02d}:{s % 60:02d}"
 
             # Check if any turn is missing embeddings
@@ -288,10 +294,11 @@ class BackendPipelineOrchestrator:
                         emb_resp = await client.post(
                             f"{self.ai_engine_url}/api/v1/transcript/embed",
                             json={"texts": texts_to_embed},
+                            headers=self.engine_headers,
                         )
                         if emb_resp.status_code == 200:
                             emb_list = emb_resp.json().get("embeddings", [])
-                            for m_idx, vec in zip(missing_indices, emb_list):
+                            for m_idx, vec in zip(missing_indices, emb_list, strict=False):
                                 if len(vec) == 1536:
                                     level1_turns[m_idx]["embedding"] = vec
                 except Exception as emb_err:
@@ -340,6 +347,7 @@ class BackendPipelineOrchestrator:
 
                 turn_rec = SpeakerTurnModel(
                     turn_id=turn_id,
+                    user_id=user_id,
                     meeting_id=meeting_id,
                     topic_id=assigned_topic_id,
                     turn_number=t_num,
@@ -376,13 +384,11 @@ class BackendPipelineOrchestrator:
         except Exception as exc:
             db.rollback()
             logger.error(f"Database persistence failure for meeting '{meeting_id}': {exc}", exc_info=True)
-            raise PipelineOrchestratorError(f"Database error saving meeting '{meeting_id}': {str(exc)}") from exc
+            raise PipelineOrchestratorError(f"Database error saving meeting '{meeting_id}': {exc!s}") from exc
         finally:
             db.close()
 
-
 backend_pipeline_orchestrator = BackendPipelineOrchestrator()
-
 
 def get_backend_pipeline_orchestrator() -> BackendPipelineOrchestrator:
     return backend_pipeline_orchestrator

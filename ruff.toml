@@ -1,0 +1,63 @@
+# Ruff configuration for Meeting Intelligence workspace
+target-version = "py312"
+line-length = 120
+
+exclude = [
+    ".git",
+    ".venv",
+    "__pycache__",
+    ".pytest_cache",
+    ".agent",
+    ".agents",
+    ".gsd",
+    "dist",
+    "build",
+]
+
+[lint]
+select = [
+    "E",    # pycodestyle errors
+    "W",    # pycodestyle warnings
+    "F",    # pyflakes
+    "I",    # isort
+    "B",    # flake8-bugbear
+    "C4",   # flake8-comprehensions
+    "UP",   # pyupgrade
+    "SIM",  # flake8-simplify
+    "RUF",  # ruff-specific rules
+]
+
+ignore = [
+    "N999",     # Invalid module name due to microservice hyphens (FS-frontend, FS-backend, etc.)
+    "E501",     # Line too long (handled by formatter)
+    "RUF001",   # Ambiguous unicode characters in UI strings (dashes, quotes)
+    "RUF002",   # Ambiguous unicode characters in docstrings
+    "RUF003",   # Ambiguous unicode characters in comments
+    "SIM102",   # Collapsible if statements (often clearer nested for guard clauses and readability)
+]
+
+[lint.flake8-bugbear]
+# Allow FastAPI Dependency Injection and parameter functions in default arguments
+extend-immutable-calls = [
+    "fastapi.Depends",
+    "fastapi.params.Depends",
+    "fastapi.Query",
+    "fastapi.params.Query",
+    "fastapi.Path",
+    "fastapi.params.Path",
+    "fastapi.Body",
+    "fastapi.params.Body",
+    "fastapi.Header",
+    "fastapi.params.Header",
+]
+
+[lint.per-file-ignores]
+# Streamlit uses nested with statements and separate if blocks for UI rendering context & lifecycle
+"FS-frontend/**" = ["SIM102", "SIM117"]
+"FS-frontend/app.py" = ["E402", "SIM102", "SIM117"]
+# AI Engine modules require dynamic root path insertion before importing core modules
+"FS-AI-Engine/engine/graphs/chat_nodes.py" = ["E402"]
+"FS-AI-Engine/engine/services/rag_service.py" = ["E402"]
+# Tests use assert statements and broad exceptions, and import after path bootstrap
+"tests/**" = ["S101", "BLE001", "E402"]
+"conftest.py" = ["E402"]

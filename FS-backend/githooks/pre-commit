@@ -1,0 +1,27 @@
+#!/bin/bash
+
+MAX_LINES=400
+FAILED=0
+
+echo "Checking staged Python files (maximum $MAX_LINES lines)..."
+
+while IFS= read -r -d '' FILE; do
+    if [ ! -f "$FILE" ]; then
+        continue
+    fi
+
+    LINES=$(wc -l < "$FILE")
+
+    if [ "$LINES" -gt "$MAX_LINES" ]; then
+        echo "ERROR: $FILE has $LINES lines (maximum: $MAX_LINES)"
+        FAILED=1
+    fi
+done < <(git diff --cached --name-only --diff-filter=ACMR -z -- '*.py')
+
+if [ "$FAILED" -eq 1 ]; then
+    echo "Commit blocked. Refactor files exceeding $MAX_LINES lines."
+    exit 1
+fi
+
+echo "File-length check passed."
+exit 0

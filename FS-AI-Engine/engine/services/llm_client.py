@@ -1,8 +1,8 @@
+import logging
 import os
 import re
-import logging
-from typing import List, Dict, Any, Optional
-from openai import AsyncOpenAI, OpenAIError
+
+from openai import AsyncOpenAI
 
 try:
     from ..core.config import settings
@@ -29,25 +29,25 @@ class OpenRouterClient:
 
     def __init__(
         self,
-        api_key: Optional[str] = None,
-        base_url: Optional[str] = None,
-        default_model: Optional[str] = None,
-        referer: Optional[str] = None,
-        title: Optional[str] = None,
-        site_url: Optional[str] = None,
-        site_name: Optional[str] = None
+        api_key: str | None = None,
+        base_url: str | None = None,
+        default_model: str | None = None,
+        referer: str | None = None,
+        title: str | None = None,
+        site_url: str | None = None,
+        site_name: str | None = None
     ):
-        self._client: Optional[AsyncOpenAI] = None
+        self._client: AsyncOpenAI | None = None
         self._genai_client = None
         self.reload_config(api_key, base_url, default_model, referer, title)
 
     def reload_config(
         self,
-        api_key: Optional[str] = None,
-        base_url: Optional[str] = None,
-        default_model: Optional[str] = None,
-        referer: Optional[str] = None,
-        title: Optional[str] = None,
+        api_key: str | None = None,
+        base_url: str | None = None,
+        default_model: str | None = None,
+        referer: str | None = None,
+        title: str | None = None,
     ):
         """Dynamically re-evaluates environment variables and .env configuration."""
         try:
@@ -59,47 +59,28 @@ class OpenRouterClient:
         except Exception:
             pass
 
-        # Resolve API keys and providers (Prioritize Gemini API when configured)
+        # Resolve Gemini API configuration directly
         self.gemini_api_key = (
-            os.getenv("GEMINI_API_KEY")
+            api_key
+            or os.getenv("GEMINI_API_KEY")
             or getattr(settings, "GEMINI_API_KEY", None)
             or os.getenv("GOOGLE_API_KEY")
         )
-        self.openrouter_api_key = (
-            api_key
-            or getattr(settings, "OPENROUTER_API_KEY", None)
-            or getattr(settings, "openrouter_api_key", None)
-            or os.getenv("OPENROUTER_API_KEY")
+        self.provider = "gemini"
+        self.api_key = self.gemini_api_key
+        self.base_url = (
+            base_url
+            or getattr(settings, "GEMINI_BASE_URL", None)
+            or os.getenv("GEMINI_BASE_URL")
+            or "https://generativelanguage.googleapis.com/v1beta/openai/"
+        )
+        self.default_model = (
+            default_model
+            or os.getenv("LLM_MODEL_NAME")
+            or getattr(settings, "LLM_MODEL_NAME", "gemini-2.5-flash")
         )
 
-        # Determine active provider and endpoint
         if self.gemini_api_key and not self.gemini_api_key.startswith("mock"):
-            self.provider = "gemini"
-            self.api_key = self.gemini_api_key
-            raw_url = (
-                base_url
-                or getattr(settings, "GEMINI_BASE_URL", None)
-                or os.getenv("GEMINI_BASE_URL")
-                or "https://generativelanguage.googleapis.com/v1beta/openai/"
-            )
-            # Ensure official Gemini OpenAI-compatible base URL if openrouter URL was mistakenly provided
-            if "openrouter.ai" in raw_url:
-                self.base_url = "https://generativelanguage.googleapis.com/v1beta/openai/"
-            else:
-                self.base_url = raw_url
-            self.default_model = default_model or os.getenv("LLM_MODEL_NAME") or getattr(settings, "LLM_MODEL_NAME", "gemini-2.5-flash")
-        else:
-            self.provider = "openrouter"
-            self.api_key = self.openrouter_api_key
-            self.base_url = (
-                base_url
-                or getattr(settings, "OPENROUTER_BASE_URL", None)
-                or getattr(settings, "openrouter_base_url", None)
-                or "https://openrouter.ai/api/v1"
-            )
-            self.default_model = default_model or os.getenv("LLM_MODEL_NAME") or getattr(settings, "LLM_MODEL_NAME", "gemini-2.5-flash")
-
-        if self.provider == "gemini" and self.gemini_api_key and not self.gemini_api_key.startswith("mock"):
             try:
                 from google import genai
                 self._genai_client = genai.Client(api_key=self.gemini_api_key)
@@ -108,34 +89,24 @@ class OpenRouterClient:
 
         if self.api_key and not self.api_key.startswith("mock"):
             try:
-                headers = {}
-                if self.provider == "openrouter":
-                    ref = referer or getattr(settings, "OPENROUTER_REFERER", None) or os.getenv("OPENROUTER_REFERER") or "http://localhost:8001"
-                    if ref:
-                        headers["HTTP-Referer"] = str(ref)
-                    tit = title or getattr(settings, "OPENROUTER_TITLE", None) or os.getenv("OPENROUTER_TITLE") or "Meeting Intelligence AI Engine"
-                    if tit:
-                        headers["X-Title"] = str(tit)
-
                 self._client = AsyncOpenAI(
                     base_url=self.base_url,
                     api_key=self.api_key,
-                    default_headers=headers if headers else None,
                     timeout=35.0,
                 )
-                logger.info(f"[LLMClient] Initialized {self.provider.upper()} client (Endpoint: {self.base_url}, Default Model: {self.default_model})")
+                logger.info(f"[LLMClient] Initialized Gemini client (Endpoint: {self.base_url}, Default Model: {self.default_model})")
             except Exception as e:
                 logger.warning(f"Could not initialize AsyncOpenAI with {self.provider}: {e}")
                 self._client = None
 
     @property
-    def client(self) -> Optional[AsyncOpenAI]:
+    def client(self) -> AsyncOpenAI | None:
         return self._client
 
     async def generate_chat_completion(
         self,
-        messages: List[Dict[str, str]],
-        model: Optional[str] = None,
+        messages: list[dict[str, str]],
+        model: str | None = None,
         max_tokens: int = 800,
         temperature: float = 0.2,
     ) -> str:
@@ -205,7 +176,7 @@ class OpenRouterClient:
         # Deterministic Conversational Fallback
         return self._generate_heuristic_fallback(messages)
 
-    def _generate_heuristic_fallback(self, messages: List[Dict[str, str]]) -> str:
+    def _generate_heuristic_fallback(self, messages: list[dict[str, str]]) -> str:
         """
         Generates natural, conversational, professional synthesis responses when running offline or in fallback mode.
         Strictly avoids raw transcript turn dumps in the answer narrative.
@@ -248,7 +219,7 @@ class OpenRouterClient:
                 # Check for direct participation or speaker inquiry (e.g., "What did X say?", "Was X involved?", "Did X join?")
                 participation_match = re.search(r"(?:what\s+did\s+([a-zA-Z]+)\s+say|was\s+([a-zA-Z]+)\s+(?:involved|part|attend|present|there)|did\s+([a-zA-Z]+)\s+(?:join|participat|say|speak|talk))", lower_prompt)
                 target_person = next((g for g in participation_match.groups() if g), None) if participation_match else None
-                
+
                 if target_person:
                     person_found = False
                     person_statements = []

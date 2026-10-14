@@ -11,18 +11,19 @@ from __future__ import annotations
 
 import logging
 import time
-from typing import Any, Dict, List, Optional
-from langgraph.graph import StateGraph, START, END
+from typing import Any
+
+from langgraph.graph import END, START, StateGraph
 
 from ..core.config import settings
 from .chat_nodes import (
     ChatState,
-    extract_filters_node,
     embed_query_node,
-    vector_retrieval_node,
-    llm_synthesis_node,
-    format_citations_node,
+    extract_filters_node,
     fallback_node,
+    format_citations_node,
+    llm_synthesis_node,
+    vector_retrieval_node,
 )
 
 logger = logging.getLogger("fs-ai-engine.chat_graph")
@@ -31,6 +32,14 @@ logger = logging.getLogger("fs-ai-engine.chat_graph")
 # ============================================================================
 # Routing Conditions
 # ============================================================================
+
+def route_after_filters(state: ChatState) -> str:
+    """
+    Catalog questions (counts, lists of projects/meetings/participants) are answered from the
+    relational records, so the embedding and vector search are skipped for them.
+    """
+    return "llm_synthesis" if state.get("skip_retrieval") else "embed_query"
+
 
 def route_after_retrieval(state: ChatState) -> str:
     """
@@ -65,7 +74,11 @@ def build_chat_graph() -> StateGraph:
 
     # 2. Linear Flow
     workflow.add_edge(START, "extract_filters")
-    workflow.add_edge("extract_filters", "embed_query")
+    workflow.add_conditional_edges(
+        "extract_filters",
+        route_after_filters,
+        {"embed_query": "embed_query", "llm_synthesis": "llm_synthesis"},
+    )
     workflow.add_edge("embed_query", "vector_retrieval")
 
     # 3. Conditional Branching based on Retrieval Quality
@@ -96,11 +109,12 @@ compiled_chat_graph = build_chat_graph()
 
 async def run_chat_graph(
     query: str,
-    project_id: Optional[str] = None,
-    meeting_id: Optional[str] = None,
-    speaker: Optional[str] = None,
+    user_id: str,
+    project_id: str | None = None,
+    meeting_id: str | None = None,
+    speaker: str | None = None,
     top_k: int = 5,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """
     Entrypoint invoked by FastAPI engine routers.
     Executes query through the compiled LangGraph StateGraph.
@@ -114,6 +128,7 @@ async def run_chat_graph(
 
     initial_state: ChatState = {
         "query": query.strip(),
+        "user_id": user_id,
         "project_id": project_id,
         "meeting_id": meeting_id,
         "extracted_speaker": speaker,

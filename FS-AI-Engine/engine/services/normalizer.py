@@ -1,17 +1,17 @@
 import re
-from typing import List, Optional
+
 from ..models.schemas import (
+    NormalizationResult,
     RawSentence,
     RawTranscriptPayload,
     SpeakerTurn,
-    NormalizationResult,
 )
 
 
 class SpeakerNormalizer:
     """
     Speaker Normalization Engine for Meeting Transcripts.
-    
+
     Responsibilities:
     1. Sorts input sentences chronologically.
     2. Merges consecutive utterances spoken by the same speaker.
@@ -31,7 +31,7 @@ class SpeakerNormalizer:
         """
         Generate deterministic turn ID conforming to mtg_<id>_turn_<NNN>.
         Guarantees minimum 3-digit zero-padding.
-        
+
         Example:
             mtg_12345_turn_001
         """
@@ -63,8 +63,8 @@ class SpeakerNormalizer:
         # Sort sentences chronologically by start_time, then index
         sorted_sentences = sorted(raw_sentences, key=lambda s: (s.start_time, s.index))
 
-        normalized_turns: List[SpeakerTurn] = []
-        current_sentences: List[RawSentence] = []
+        normalized_turns: list[SpeakerTurn] = []
+        current_sentences: list[RawSentence] = []
         turn_counter = 1
 
         for sentence in sorted_sentences:
@@ -133,7 +133,7 @@ class SpeakerNormalizer:
         self,
         meeting_id: str,
         turn_number: int,
-        sentences: List[RawSentence],
+        sentences: list[RawSentence],
     ) -> SpeakerTurn:
         """Construct a validated SpeakerTurn from a sequence of sentences by one speaker."""
         primary_speaker_name = (sentences[0].speaker_name or "Unknown Speaker").strip()

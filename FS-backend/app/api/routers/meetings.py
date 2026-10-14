@@ -1,12 +1,23 @@
-import re
 import logging
+import re
+from typing import Any
 from urllib.parse import urlparse
-from typing import Optional, Dict, Any
-from fastapi import APIRouter, BackgroundTasks, HTTPException, status, Depends
-from pydantic import BaseModel, HttpUrl, Field
 
-from ...services.fireflies_client import FirefliesClient, FirefliesAPIError, get_fireflies_client
-from ...services.pipeline_orchestrator import BackendPipelineOrchestrator, get_backend_pipeline_orchestrator
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
+from pydantic import BaseModel, Field, HttpUrl
+from sqlalchemy.orm import Session
+
+from ...api.deps import get_current_user
+from ...core.database import UserModel, get_db
+from ...services.fireflies_client import (
+    FirefliesClient,
+    get_fireflies_client,
+)
+from ...services.ownership import meeting_taken, project_taken
+from ...services.pipeline_orchestrator import (
+    BackendPipelineOrchestrator,
+    get_backend_pipeline_orchestrator,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -18,8 +29,8 @@ SUPPORTED_MEDIA_EXTENSIONS = (".mp3", ".mp4", ".wav", ".m4a", ".aac", ".ogg", ".
 class IngestLinkRequest(BaseModel):
     """Request body for asynchronous meeting link ingestion."""
     link: HttpUrl = Field(..., description="Fireflies dashboard view link or public audio/video file link")
-    project_id: Optional[str] = Field(default=None, description="Parent project identifier")
-    title: Optional[str] = Field(default=None, description="Optional custom title for the meeting")
+    project_id: str | None = Field(default=None, description="Parent project identifier")
+    title: str | None = Field(default=None, description="Optional custom title for the meeting")
 
 
 class IngestLinkResponse(BaseModel):
@@ -28,11 +39,11 @@ class IngestLinkResponse(BaseModel):
     job_type: str
     message: str
     meeting_identifier: str
-    project_id: Optional[str] = None
+    project_id: str | None = None
     target_link: str
 
 
-def parse_meeting_link(url_str: str) -> Dict[str, Any]:
+def parse_meeting_link(url_str: str) -> dict[str, Any]:
     """
     Parses and categorizes an incoming meeting link.
 
@@ -77,10 +88,25 @@ def parse_meeting_link(url_str: str) -> Dict[str, Any]:
     )
 
 
+def _assert_ids_available(db: Session, user_id: str, project_id: str | None, meeting_id: str) -> None:
+    """IDs are globally unique, so refuse to ingest into an ID another account already owns."""
+    if project_id and project_taken(db, user_id, project_id):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Project ID '{project_id}' is already in use. Please choose a different project ID.",
+        )
+    if meeting_taken(db, user_id, meeting_id):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Meeting '{meeting_id}' is already in use and cannot be ingested into this account.",
+        )
+
+
 async def _process_fireflies_dashboard_task(
     transcript_id: str,
-    project_id: Optional[str],
-    title: Optional[str],
+    user_id: str,
+    project_id: str | None,
+    title: str | None,
     fireflies_svc: FirefliesClient,
     orchestrator_svc: BackendPipelineOrchestrator,
 ) -> None:
@@ -91,6 +117,7 @@ async def _process_fireflies_dashboard_task(
         logger.info(f"[Background Task] Fetched transcript for '{transcript_id}'. Running AI Engine pipeline...")
         result = await orchestrator_svc.orchestrate_meeting_ingestion(
             transcript_dict=transcript_data,
+            user_id=user_id,
             project_id=project_id,
             custom_title=title,
         )
@@ -101,7 +128,7 @@ async def _process_fireflies_dashboard_task(
 
 async def _process_raw_media_task(
     media_url: str,
-    title: Optional[str],
+    title: str | None,
     fireflies_svc: FirefliesClient,
 ) -> None:
     """Background worker task to submit external media recording to Fireflies uploadAudio mutation."""
@@ -128,6 +155,8 @@ async def _process_raw_media_task(
 async def ingest_meeting_link(
     payload: IngestLinkRequest,
     background_tasks: BackgroundTasks,
+    user: UserModel = Depends(get_current_user),
+    db: Session = Depends(get_db),
     fireflies_svc: FirefliesClient = Depends(get_fireflies_client),
     orchestrator_svc: BackendPipelineOrchestrator = Depends(get_backend_pipeline_orchestrator),
 ) -> IngestLinkResponse:
@@ -141,17 +170,19 @@ async def ingest_meeting_link(
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(val_err),
-        )
+        ) from val_err
 
     link_type = parsed_link["type"]
     identifier = parsed_link["id"]
 
     # 2. Queue appropriate background worker
     if link_type == "FIREFLIES_DASHBOARD":
+        _assert_ids_available(db, user.id, payload.project_id, identifier)
         effective_title = payload.title or parsed_link.get("title")
         background_tasks.add_task(
             _process_fireflies_dashboard_task,
             transcript_id=identifier,
+            user_id=user.id,
             project_id=payload.project_id,
             title=effective_title,
             fireflies_svc=fireflies_svc,

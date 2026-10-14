@@ -1,7 +1,7 @@
 from functools import lru_cache
 from pathlib import Path
-from typing import List, Union, Optional
-from pydantic import field_validator, Field, AliasChoices
+
+from pydantic import AliasChoices, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 BACKEND_DIR = Path(__file__).resolve().parent.parent.parent
@@ -17,22 +17,16 @@ class Settings(BaseSettings):
     backend_env: str = "development"
 
     # CORS configuration
-    cors_origins: Union[List[str], str] = ["*"]
+    cors_origins: list[str] | str = ["*"]
 
     # Database configuration
     database_url: str = Field(
-        default="postgresql://python:python@localhost:5434/Fireflies",
         validation_alias=AliasChoices("DATABASE_URL", "database_url"),
-    )
-
-    # Fireflies Webhook HMAC Secret
-    fireflies_webhook_secret: str = Field(
-        default="super_secret_webhook_key_12345",
-        validation_alias=AliasChoices("FIREFLIES_WEBHOOK_SECRET", "fireflies_webhook_secret"),
+        description="PostgreSQL database connection string (must be provided via environment or .env)",
     )
 
     # Fireflies API Credentials
-    fireflies_api_key: Optional[str] = Field(
+    fireflies_api_key: str | None = Field(
         default=None,
         validation_alias=AliasChoices("FIREFLIES_API_KEY", "fireflies_api_key"),
     )
@@ -43,8 +37,7 @@ class Settings(BaseSettings):
 
     # FS-AI-Engine endpoint
     ai_engine_url: str = Field(
-        default="http://localhost:8001",
-        validation_alias=AliasChoices("AI_ENGINE_URL", "ai_engine_url"),
+        validation_alias=AliasChoices("AI_ENGINE_URL", "ai_engine_url", "FS_AI_ENGINE_URL"),
     )
     ai_engine_timeout_seconds: float = Field(
         default=300.0,
@@ -52,41 +45,32 @@ class Settings(BaseSettings):
         description="Timeout in seconds when communicating with FS-AI-Engine for deep processing",
     )
 
-    # Gemini parameters
-    gemini_api_key: Optional[str] = Field(
-        default=None,
-        validation_alias=AliasChoices("GEMINI_API_KEY", "gemini_api_key"),
+    # Authentication (JWT bearer tokens issued by this backend)
+    jwt_secret: str = Field(
+        validation_alias=AliasChoices("JWT_SECRET", "jwt_secret"),
+        min_length=16,
+        description="Secret used to sign access tokens (must be provided via environment or .env)",
     )
-    gemini_base_url: str = Field(
-        default="https://generativelanguage.googleapis.com/v1beta/openai/",
-        validation_alias=AliasChoices("GEMINI_BASE_URL", "gemini_base_url"),
+    jwt_algorithm: str = Field(default="HS256")
+    access_token_expire_minutes: int = Field(
+        default=720,
+        validation_alias=AliasChoices("ACCESS_TOKEN_EXPIRE_MINUTES", "access_token_expire_minutes"),
     )
 
-    # OpenRouter parameters
-    openrouter_api_key: Optional[str] = Field(
-        default=None,
-        validation_alias=AliasChoices("OPENROUTER_API_KEY", "openrouter_api_key"),
-    )
-    openrouter_base_url: str = Field(
-        default="https://openrouter.ai/api/v1",
-        validation_alias=AliasChoices("OPENROUTER_BASE_URL", "openrouter_base_url"),
-    )
-    llm_model_name: str = Field(
-        default="gemini-2.5-flash",
-        validation_alias=AliasChoices("LLM_MODEL_NAME", "llm_model_name"),
+    # Shared secret sent to FS-AI-Engine so only this backend can call it
+    engine_api_key: str = Field(
+        validation_alias=AliasChoices("ENGINE_API_KEY", "engine_api_key"),
+        min_length=16,
+        description="Internal API key shared with FS-AI-Engine (must be provided via environment or .env)",
     )
 
     @property
-    def FIREFLIES_API_KEY(self) -> Optional[str]:
+    def FIREFLIES_API_KEY(self) -> str | None:
         return self.fireflies_api_key
 
     @property
     def FIREFLIES_API_URL(self) -> str:
         return self.fireflies_api_url
-
-    @property
-    def FIREFLIES_WEBHOOK_SECRET(self) -> str:
-        return self.fireflies_webhook_secret
 
     @property
     def AI_ENGINE_URL(self) -> str:
@@ -101,7 +85,7 @@ class Settings(BaseSettings):
 
     @field_validator("cors_origins", mode="before")
     @classmethod
-    def assemble_cors_origins(cls, v: Union[str, List[str]]) -> List[str]:
+    def assemble_cors_origins(cls, v: str | list[str]) -> list[str]:
         if isinstance(v, str) and not v.startswith("["):
             return [i.strip() for i in v.split(",") if i.strip()]
         return v
@@ -113,7 +97,7 @@ class Settings(BaseSettings):
     )
 
 
-@lru_cache()
+@lru_cache
 def get_settings() -> Settings:
     """Return cached singleton settings."""
     return Settings()

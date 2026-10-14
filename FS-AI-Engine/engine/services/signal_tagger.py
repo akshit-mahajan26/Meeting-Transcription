@@ -1,5 +1,6 @@
 import re
-from typing import List, Tuple, Set
+from typing import ClassVar
+
 from ..models.schemas import SpeakerTurn
 
 
@@ -13,7 +14,7 @@ class SignalTagger:
     """
 
     # Interrogative regex patterns
-    QUESTION_PATTERNS = [
+    QUESTION_PATTERNS: ClassVar[list[re.Pattern]] = [
         re.compile(r"\?\s*$"),
         re.compile(r"\b(what|why|how|who|when|where|which)\b", re.IGNORECASE),
         re.compile(r"^(can|could|would|should|is|are|do|does|did|will|have|has)\s+(you|we|it|there|anyone|anybody)\b", re.IGNORECASE),
@@ -22,7 +23,7 @@ class SignalTagger:
     ]
 
     # Commitment / Action intent patterns
-    COMMITMENT_PATTERNS = [
+    COMMITMENT_PATTERNS: ClassVar[list[re.Pattern]] = [
         re.compile(r"\b(i will|i'll|we will|we'll)\b", re.IGNORECASE),
         re.compile(r"\b(i can take|i'm going to|i am going to|let me handle)\b", re.IGNORECASE),
         re.compile(r"\b(my action item|action item for me|take this on|own this)\b", re.IGNORECASE),
@@ -33,7 +34,7 @@ class SignalTagger:
     ]
 
     # Blocker / Roadblock patterns
-    BLOCKER_PATTERNS = [
+    BLOCKER_PATTERNS: ClassVar[list[re.Pattern]] = [
         re.compile(r"\b(blocked by|is blocking|blocker|blockers)\b", re.IGNORECASE),
         re.compile(r"\b(waiting on|waiting for|depends on|dependency on)\b", re.IGNORECASE),
         re.compile(r"\b(cannot proceed|can't proceed|stuck on|preventing us)\b", re.IGNORECASE),
@@ -42,7 +43,7 @@ class SignalTagger:
         re.compile(r"\b(holding us back|need approval before|gated by)\b", re.IGNORECASE),
     ]
 
-    def detect_signals(self, text: str) -> Tuple[bool, bool, bool, List[str]]:
+    def detect_signals(self, text: str) -> tuple[bool, bool, bool, list[str]]:
         """
         Evaluate text for questions, commitments, and blockers.
 
@@ -57,7 +58,7 @@ class SignalTagger:
         is_commitment = any(pattern.search(clean_text) for pattern in self.COMMITMENT_PATTERNS)
         is_blocker = any(pattern.search(clean_text) for pattern in self.BLOCKER_PATTERNS)
 
-        signals: List[str] = []
+        signals: list[str] = []
         if is_question:
             signals.append("question")
         if is_commitment:
@@ -76,6 +77,6 @@ class SignalTagger:
         turn.signals = signals
         return turn
 
-    def tag_turns(self, turns: List[SpeakerTurn]) -> List[SpeakerTurn]:
+    def tag_turns(self, turns: list[SpeakerTurn]) -> list[SpeakerTurn]:
         """Apply signal flags across a list of SpeakerTurns."""
         return [self.tag_turn(t) for t in turns]

@@ -1,15 +1,14 @@
-import re
-import math
 import asyncio
 import logging
-from typing import List, Dict, Optional, Tuple, Set
+import math
+import re
 from collections import Counter
-from ..core.settings import get_settings, Settings
+
+from ..core.config import Settings, get_settings
 from ..models.schemas import SpeakerTurn, TopicSegment
 from .llm_client import OpenRouterClient, openrouter_client
 
 logger = logging.getLogger(__name__)
-
 
 # Standard English stopwords to filter during lexical vectorization
 STOPWORDS = {
@@ -35,11 +34,10 @@ STOPWORDS = {
     "yourself", "yourselves", "yeah", "okay", "ok", "yes", "sure", "right", "like"
 }
 
-
 class TopicSegmenter:
     """
     Level 2 Hybrid Boundary Topic Segmenter.
-    
+
     1. Computes similarity guardrails (Theta_TOPIC) across turn windows using TF-IDF vectorization.
     2. Identifies candidate boundaries where topic similarity drops.
     3. Confirms boundary intent, suppressing splits on short counter-questions or momentary tangents.
@@ -48,7 +46,7 @@ class TopicSegmenter:
     6. Produces validated TopicSegment models conforming to mtg_<id>_seg_<NN>.
     """
 
-    def __init__(self, settings: Optional[Settings] = None, llm_client: Optional[OpenRouterClient] = None):
+    def __init__(self, settings: Settings | None = None, llm_client: OpenRouterClient | None = None):
         self.settings = settings or get_settings()
         self.llm_client = llm_client or openrouter_client
         self.similarity_threshold = self.settings.topic_similarity_threshold
@@ -57,12 +55,12 @@ class TopicSegmenter:
         self.llm_model = getattr(self.settings, "LLM_MODEL_NAME", None) or getattr(self.settings, "llm_model", "gemini-2.5-flash")
 
     @staticmethod
-    def _tokenize(text: str) -> List[str]:
+    def _tokenize(text: str) -> list[str]:
         """Tokenize text into lowercase alphanumeric tokens excluding stopwords."""
         tokens = re.findall(r"\b[a-zA-Z]{3,}\b", text.lower())
         return [t for t in tokens if t not in STOPWORDS]
 
-    def _compute_cosine_similarity(self, tokens1: List[str], tokens2: List[str]) -> float:
+    def _compute_cosine_similarity(self, tokens1: list[str], tokens2: list[str]) -> float:
         """Calculate cosine similarity between token frequency distributions."""
         if not tokens1 or not tokens2:
             return 0.0
@@ -83,7 +81,7 @@ class TopicSegmenter:
 
         return dot_product / (mag1 * mag2)
 
-    def _is_short_tangent(self, turns: List[SpeakerTurn], candidate_idx: int) -> bool:
+    def _is_short_tangent(self, turns: list[SpeakerTurn], candidate_idx: int) -> bool:
         """
         Check if turn at candidate_idx is a brief tangent or counter-question.
         If the turn is an interrogative or very short utterance, do not shatter context.
@@ -106,116 +104,24 @@ class TopicSegmenter:
     def segment_transcript(
         self,
         meeting_id: str,
-        turns: List[SpeakerTurn],
-        similarity_threshold_override: Optional[float] = None,
-        min_turns_override: Optional[int] = None,
-        max_turns_override: Optional[int] = None,
-    ) -> List[TopicSegment]:
-        """
-        Segment normalized turns into cohesive Level 2 topic segments.
-
-        Args:
-            meeting_id: Unique meeting identifier.
-            turns: Ordered list of Level 1 SpeakerTurn objects.
-            similarity_threshold_override: Optional override for Theta_TOPIC.
-            min_turns_override: Optional override for minimum turns per segment.
-            max_turns_override: Optional override for maximum turns per segment.
-
-        Returns:
-            List of validated TopicSegment objects conforming to mtg_<id>_seg_<NN>.
-        """
-        if not turns:
-            return []
-
-        threshold = similarity_threshold_override if similarity_threshold_override is not None else self.similarity_threshold
-        min_turns = min_turns_override if min_turns_override is not None else self.min_turns
-        max_turns = max_turns_override if max_turns_override is not None else self.max_turns
-
-        # Handle very short meetings that fit in a single segment
-        if len(turns) <= min_turns:
-            return [self._build_segment(meeting_id, 1, turns, confidence=1.0)]
-
-        # Precompute token lists for each turn
-        turn_tokens = [self._tokenize(t.text) for t in turns]
-
-        # Calculate boundary similarity scores between adjacent windows (window size = 2)
-        boundary_scores: List[float] = []
-        for i in range(len(turns) - 1):
-            left_window_tokens = []
-            for j in range(max(0, i - 1), i + 1):
-                left_window_tokens.extend(turn_tokens[j])
-
-            right_window_tokens = []
-            for j in range(i + 1, min(len(turns), i + 3)):
-                right_window_tokens.extend(turn_tokens[j])
-
-            sim = self._compute_cosine_similarity(left_window_tokens, right_window_tokens)
-            boundary_scores.append(sim)
-
-        # Identify segmentation cut points
-        cut_indices: List[int] = []
-        last_cut = 0
-
-        for i in range(len(boundary_scores)):
-            turns_in_current = (i + 1) - last_cut
-            similarity = boundary_scores[i]
-
-            # Candidate shift flagged if similarity drops below threshold
-            is_candidate_shift = similarity < threshold
-
-            # Guardrail 1: Enforce minimum turns
-            if turns_in_current < min_turns:
-                continue
-
-            # Guardrail 2: Enforce maximum turns (force split at local minimum if exceeding max)
-            if turns_in_current >= max_turns:
-                cut_indices.append(i + 1)
-                last_cut = i + 1
-                continue
-
-            # Guardrail 3: LLM / heuristic confirmation against short tangents
-            if is_candidate_shift:
-                if self._is_short_tangent(turns, i + 1):
-                    # Suppress false split on short counter-question or brief tangent
-                    continue
-                else:
-                    cut_indices.append(i + 1)
-                    last_cut = i + 1
-
-        # Construct segments from cut indices
-        segments: List[TopicSegment] = []
-        start_idx = 0
-        seg_counter = 1
-
-        for cut_idx in cut_indices:
-            seg_turns = turns[start_idx:cut_idx]
-            if seg_turns:
-                conf = round(1.0 - (boundary_scores[cut_idx - 1] if cut_idx - 1 < len(boundary_scores) else 0.5), 2)
-                segments.append(self._build_segment(meeting_id, seg_counter, seg_turns, confidence=conf))
-                seg_counter += 1
-            start_idx = cut_idx
-
-        # Trailing segment
-        if start_idx < len(turns):
-            trailing_turns = turns[start_idx:]
-            # If trailing turns are fewer than min_turns and we already have a previous segment, merge into it
-            if len(trailing_turns) < min_turns and segments:
-                last_seg = segments[-1]
-                combined_turns = [t for t in turns if t.turn_id in last_seg.turn_ids] + trailing_turns
-                segments[-1] = self._build_segment(meeting_id, last_seg.segment_index, combined_turns, confidence=last_seg.boundary_confidence)
-            else:
-                segments.append(self._build_segment(meeting_id, seg_counter, trailing_turns, confidence=0.85))
-
-        return segments
+        turns: list[SpeakerTurn],
+        similarity_threshold_override: float | None = None,
+        min_turns_override: int | None = None,
+        max_turns_override: int | None = None,
+    ) -> list[TopicSegment]:
+        """Synchronous wrapper around segment_transcript_async (for non-async callers)."""
+        return asyncio.run(self.segment_transcript_async(
+            meeting_id, turns, similarity_threshold_override, min_turns_override, max_turns_override,
+        ))
 
     async def segment_transcript_async(
         self,
         meeting_id: str,
-        turns: List[SpeakerTurn],
-        similarity_threshold_override: Optional[float] = None,
-        min_turns_override: Optional[int] = None,
-        max_turns_override: Optional[int] = None,
-    ) -> List[TopicSegment]:
+        turns: list[SpeakerTurn],
+        similarity_threshold_override: float | None = None,
+        min_turns_override: int | None = None,
+        max_turns_override: int | None = None,
+    ) -> list[TopicSegment]:
         """
         Asynchronously segment turns into cohesive Level 2 topic segments with LLM-generated executive headings.
         """
@@ -231,7 +137,7 @@ class TopicSegmenter:
 
         turn_tokens = [self._tokenize(t.text) for t in turns]
 
-        boundary_scores: List[float] = []
+        boundary_scores: list[float] = []
         for i in range(len(turns) - 1):
             left_window_tokens = []
             for j in range(max(0, i - 1), i + 1):
@@ -244,7 +150,7 @@ class TopicSegmenter:
             sim = self._compute_cosine_similarity(left_window_tokens, right_window_tokens)
             boundary_scores.append(sim)
 
-        cut_indices: List[int] = []
+        cut_indices: list[int] = []
         last_cut = 0
 
         for i in range(len(boundary_scores)):
@@ -292,7 +198,7 @@ class TopicSegmenter:
         # Build segments concurrently with bounded semaphore (6 workers) for high throughput
         sem = asyncio.Semaphore(6)
 
-        async def _build_bounded(s_idx: int, s_turns: List[SpeakerTurn], s_conf: float) -> TopicSegment:
+        async def _build_bounded(s_idx: int, s_turns: list[SpeakerTurn], s_conf: float) -> TopicSegment:
             async with sem:
                 return await self._build_segment_async(meeting_id, s_idx, s_turns, confidence=s_conf)
 
@@ -303,45 +209,11 @@ class TopicSegmenter:
 
         return list(segments)
 
-    def _build_segment(
-        self,
-        meeting_id: str,
-        segment_index: int,
-        segment_turns: List[SpeakerTurn],
-        confidence: float = 1.0,
-    ) -> TopicSegment:
-        """Construct a validated TopicSegment conforming to mtg_<id>_seg_<NN> (Synchronous version)."""
-        clean_meeting_id = re.sub(r"[^a-zA-Z0-9_\-]", "_", meeting_id.strip())
-        segment_id = f"mtg_{clean_meeting_id}_seg_{segment_index:02d}"
-
-        start_time = round(min(t.start_time for t in segment_turns), 2)
-        end_time = round(max(t.end_time for t in segment_turns), 2)
-        duration = round(max(0.0, end_time - start_time), 2)
-
-        key_speakers = list(dict.fromkeys(t.speaker_name for t in segment_turns))
-        title = self._generate_title(segment_turns)
-        summary = self._generate_summary(segment_turns)
-
-        return TopicSegment(
-            segment_id=segment_id,
-            meeting_id=meeting_id,
-            segment_index=segment_index,
-            title=title,
-            topic_summary=summary,
-            turn_ids=[t.turn_id for t in segment_turns],
-            start_time=start_time,
-            end_time=end_time,
-            duration=duration,
-            turns_count=len(segment_turns),
-            key_speakers=key_speakers,
-            boundary_confidence=max(0.1, min(1.0, confidence)),
-        )
-
     async def _build_segment_async(
         self,
         meeting_id: str,
         segment_index: int,
-        segment_turns: List[SpeakerTurn],
+        segment_turns: list[SpeakerTurn],
         confidence: float = 1.0,
     ) -> TopicSegment:
         """Construct a validated TopicSegment with async LLM heading generation."""
@@ -371,21 +243,19 @@ class TopicSegmenter:
             boundary_confidence=max(0.1, min(1.0, confidence)),
         )
 
-    async def _generate_title_async(self, turns: List[SpeakerTurn]) -> str:
+    async def _generate_title_async(self, turns: list[SpeakerTurn]) -> str:
         """
         Synthesize an understandable, executive-level 5-to-6 word topic heading summarizing the discussion.
         """
         sample_text = "\n".join([f"{t.speaker_name}: {t.text}" for t in turns])[:1000]
         prompt = (
-            "You are an executive meeting analyst. Analyze the following meeting dialogue excerpt and generate "
-            "an understandable, professional 5-to-6 word topic heading that describes what was discussed.\n\n"
+            "You are an executive meeting analyst. Analyze the following meeting dialogue excerpt and generate an understandable, professional 5-to-6 word topic heading that describes what was discussed.\n\n"
             "STRICT RULES:\n"
             "1. Length: Exactly 5 to 6 words.\n"
             "2. Quality: Must convey a clear, meaningful business or technical topic (e.g., "
             "'Implementing Hybrid Search And Database Caching', 'Resolving Staging Contention And Timeout Errors', "
             "'Reviewing Frontend UI Migration And Roadmap').\n"
-            "3. Format: Return ONLY the title itself. Do NOT include quotes, prefixes like 'Topic:', "
-            "or generic suffixes like 'Discussion' or 'Chapter'.\n"
+            "3. Format: Return ONLY the title itself. Do NOT include quotes, prefixes like 'Topic:', or generic suffixes like 'Discussion' or 'Chapter'.\n"
             "4. Forbidden: NEVER use vague word lists like 'Word & Word & Word'.\n\n"
             f"Meeting Excerpt:\n{sample_text}\n\n"
             "Topic Heading:"
@@ -413,24 +283,7 @@ class TopicSegmenter:
 
         return self._generate_fallback_title(turns)
 
-    def _generate_title(self, turns: List[SpeakerTurn]) -> str:
-        """Synchronous wrapper for generating topic heading."""
-        # Check if running within an event loop
-        try:
-            loop = asyncio.get_running_loop()
-        except RuntimeError:
-            loop = None
-
-        if loop and loop.is_running():
-            # In an active loop, use heuristic fallback to avoid blocking
-            return self._generate_fallback_title(turns)
-        else:
-            try:
-                return asyncio.run(self._generate_title_async(turns))
-            except Exception:
-                return self._generate_fallback_title(turns)
-
-    def _generate_fallback_title(self, turns: List[SpeakerTurn]) -> str:
+    def _generate_fallback_title(self, turns: list[SpeakerTurn]) -> str:
         """Generate a meaningful 5-to-6 word descriptive heading without vague 'X & Y & Z' formatting."""
         # Find first substantive turn with an action, commitment, or blocker
         for t in turns:
@@ -451,7 +304,7 @@ class TopicSegmenter:
             return f"Discussion On {' '.join(top[:4])}"
         return f"Meeting Discussion For Turns {turns[0].turn_number} To {turns[-1].turn_number}"
 
-    def _generate_summary(self, turns: List[SpeakerTurn]) -> str:
+    def _generate_summary(self, turns: list[SpeakerTurn]) -> str:
         """Synthesize an informative summary for the topic segment."""
         speakers = list(dict.fromkeys(t.speaker_name for t in turns))
         speakers_str = ", ".join(speakers)
