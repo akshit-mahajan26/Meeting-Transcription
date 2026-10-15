@@ -128,6 +128,9 @@ async def vector_retrieval_node(state: ChatState) -> dict[str, Any]:
             if resolved_meeting_id:
                 query_parts.append("AND (t.metadata->>'meeting_id' = :m_id OR t.meeting_id = :m_id)")
                 params["m_id"] = resolved_meeting_id
+            elif state.get("date_meeting_ids"):
+                query_parts.append("AND t.meeting_id = ANY(:m_ids)")
+                params["m_ids"] = list(state["date_meeting_ids"])
 
             if project_id:
                 query_parts.append("AND (t.metadata->>'project_id' = :p_id OR m.project_id = :p_id)")

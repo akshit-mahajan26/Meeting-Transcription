@@ -115,26 +115,6 @@ class Settings(BaseSettings):
     def EMBEDDING_DIMENSION(self) -> int:
         return self.embedding_dimensions
 
-    @property
-    def MACRO_SEARCH_LIMIT(self) -> int:
-        return 10
-
-    @property
-    def SEARCH_LIMIT(self) -> int:
-        return 5
-
-    @property
-    def SIMILARITY_THRESHOLD(self) -> float:
-        return self.boundary_similarity_threshold
-
-    @property
-    def ASYNC_DATABASE_URL(self) -> str:
-        return self.database_url
-
-    @property
-    def is_gemini_configured(self) -> bool:
-        return bool(self.GEMINI_API_KEY and self.GEMINI_API_KEY.strip())
-
     model_config = SettingsConfigDict(
         env_file=[str(ENGINE_DIR / ".env"), ".env"],
         env_file_encoding="utf-8",

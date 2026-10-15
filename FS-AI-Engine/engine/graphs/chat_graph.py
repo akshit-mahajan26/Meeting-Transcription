@@ -38,6 +38,8 @@ def route_after_filters(state: ChatState) -> str:
     Catalog questions (counts, lists of projects/meetings/participants) are answered from the
     relational records, so the embedding and vector search are skipped for them.
     """
+    if state.get("no_meeting_on_date"):
+        return "fallback"  # nothing was held on the requested date, so there is nothing to retrieve
     return "llm_synthesis" if state.get("skip_retrieval") else "embed_query"
 
 
@@ -77,7 +79,7 @@ def build_chat_graph() -> StateGraph:
     workflow.add_conditional_edges(
         "extract_filters",
         route_after_filters,
-        {"embed_query": "embed_query", "llm_synthesis": "llm_synthesis"},
+        {"embed_query": "embed_query", "llm_synthesis": "llm_synthesis", "fallback": "fallback"},
     )
     workflow.add_edge("embed_query", "vector_retrieval")
 

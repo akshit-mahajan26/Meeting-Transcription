@@ -13,7 +13,7 @@ from ...services.fireflies_client import (
     FirefliesClient,
     get_fireflies_client,
 )
-from ...services.ownership import meeting_taken, project_taken
+from ...services.ownership import meeting_taken
 from ...services.pipeline_orchestrator import (
     BackendPipelineOrchestrator,
     get_backend_pipeline_orchestrator,
@@ -88,13 +88,8 @@ def parse_meeting_link(url_str: str) -> dict[str, Any]:
     )
 
 
-def _assert_ids_available(db: Session, user_id: str, project_id: str | None, meeting_id: str) -> None:
-    """IDs are globally unique, so refuse to ingest into an ID another account already owns."""
-    if project_id and project_taken(db, user_id, project_id):
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail=f"Project ID '{project_id}' is already in use. Please choose a different project ID.",
-        )
+def _assert_ids_available(db: Session, user_id: str, meeting_id: str) -> None:
+    """Meeting IDs are globally unique, so refuse to ingest into an ID another account already owns."""
     if meeting_taken(db, user_id, meeting_id):
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -177,7 +172,7 @@ async def ingest_meeting_link(
 
     # 2. Queue appropriate background worker
     if link_type == "FIREFLIES_DASHBOARD":
-        _assert_ids_available(db, user.id, payload.project_id, identifier)
+        _assert_ids_available(db, user.id, identifier)
         effective_title = payload.title or parsed_link.get("title")
         background_tasks.add_task(
             _process_fireflies_dashboard_task,

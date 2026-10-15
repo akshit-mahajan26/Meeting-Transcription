@@ -8,6 +8,7 @@ Answer-generation nodes of the chat pipeline:
 """
 
 from __future__ import annotations
+
 import logging
 import os
 import re
@@ -24,139 +25,51 @@ from .chat_query import (
     _state_speakers,
     normalize_entity_typos,
 )
+from .chat_records import build_catalog_records, build_meeting_details
 
 # Dedicated AI Service Logger
 logger = logging.getLogger("fs-ai-engine.chat_graph")
 
-UNIVERSAL_RAG_SYSTEM_PROMPT = """You are an expert Meeting Intelligence Assistant. Your primary goal is to provide clear, professional, and conversational answers to *any* user query regarding ingested meeting transcripts, catalog records, and project metadata.
+def get_system_prompt(now_utc: datetime | None = None) -> str:
+    """Constructs the universal RAG system prompt with live temporal metadata reference."""
+    now = now_utc or datetime.now(UTC)
+    current_moment_str = now.strftime("%A, %B %d, %Y at %H:%M UTC")
+    iso_date = now.strftime("%Y-%m-%d")
+    day_name = now.strftime("%A")
+
+    return f"""You are an expert Meeting Intelligence Assistant. Your primary goal is to provide clear, \
+professional, and conversational answers to *any* user query regarding ingested meeting transcripts, catalog \
+records, and project metadata.
+
+System Temporal Reference (Query Execution Time):
+- **Current Moment:** {current_moment_str}
+- **Today's Date:** {iso_date} ({day_name})
+- **Note:** This timestamp represents the exact present moment when the user is asking their question. It is \
+distinct from the historical occurrence dates and within-meeting audio timestamps of the ingested transcripts.
 
 Guidelines:
-1. **Conversational Synthesis:** Answer the user's question directly, clearly, and naturally in the main response body. Never dump raw transcript blocks, speaker headers, or timestamps into the text response.
-2. **Catalog & Inventory Queries:** When asked about system entities (projects, meetings, participants, topics, statuses, counts), ground your answer directly and strictly in the verified database catalog records provided. State names, IDs, statuses, and counts accurately.
-3. **Participant Involvement & Meetings:** When asked to list meetings or about who was involved, explicitly name the meeting title(s) and meeting ID(s) based on the verified database records and excerpts.
-4. **Meeting Dates:** When asked when a meeting took place, answer from the Meeting Details records (dates and times are UTC). Do not infer dates from transcript text.
-5. **Strict Grounding:** Base your response on the provided context, transcript excerpts, and database records. If information is missing from the context, state clearly that the records do not contain it."""
+1. **Conversational Synthesis:** Answer the user's question directly, clearly, and naturally in the main response \
+body. Never dump raw transcript blocks, speaker headers, or timestamps into the text response.
+2. **Catalog & Inventory Queries:** When asked about system entities (projects, meetings, participants, topics, \
+statuses, counts), ground your answer directly and strictly in the verified database catalog records provided. \
+State names, IDs, statuses, and counts accurately.
+3. **Participant Involvement & Meetings:** When asked to list meetings or about who was involved, explicitly name \
+the meeting title(s) and meeting ID(s) based on the verified database records and excerpts.
+4. **Meeting Dates & Temporal Accuracy:**
+   - When asked when a meeting took place, answer strictly from the verified Meeting Details records (dates and \
+times are UTC).
+   - Use the **Current Moment** ({current_moment_str}) as the absolute reference anchor for all relative time \
+queries ('today', 'yesterday', 'this week', 'last week', etc.).
+   - Distinguish sharply between the current execution date and the historical dates when past meetings occurred.
+   - NEVER confuse dates, weekdays, or relative time phrases spoken *inside* past meeting transcripts (e.g., when a \
+speaker in a past recording said "yesterday we had an outage" or "let's sync this Friday") with the user's present \
+day. Those historical statements apply only to the day of that past recording.
+   - If a user asks about events on a specific date or timeframe (e.g., "what happened on October 14th" or "what \
+did we discuss yesterday"), check the verified "Held on" date of the meetings. If no meeting was held on that date, \
+state clearly that no meetings were recorded for that date.
+5. **Strict Grounding:** Base your response on the provided context, transcript excerpts, and database records. If \
+information is missing from the context, state clearly that the records do not contain it."""
 
-_MAX_CATALOG_MEETING_ROWS = 200
-_MAX_DETAIL_MEETINGS = 5
-
-def format_meeting_date(raw: Any) -> str | None:
-    """Meeting start as 'YYYY-MM-DD HH:MM UTC'. Fireflies stores epoch milliseconds; ISO strings pass through."""
-    if not raw:
-        return None
-    text = str(raw).strip()
-    try:
-        number = float(text)
-    except ValueError:
-        try:
-            return datetime.fromisoformat(text).astimezone(UTC).strftime("%Y-%m-%d %H:%M UTC")
-        except ValueError:
-            return text
-    if number <= 0:
-        return None
-    seconds = number / 1000 if number > 1e11 else number
-    return datetime.fromtimestamp(seconds, tz=UTC).strftime("%Y-%m-%d %H:%M UTC")
-
-def build_meeting_details(available_meetings: list[dict[str, Any]], meeting_ids: list[str]) -> str:
-    """Verified per-meeting facts (title, ID, project, date and time), so date questions can be answered."""
-    by_id = {m["id"]: m for m in available_meetings}
-    lines = []
-    for mid in dict.fromkeys(meeting_ids):
-        m = by_id.get(mid)
-        if not m:
-            continue
-        lines.append(
-            f"- **{m['title']}** (ID: {m['id']}, Project: {m.get('project_id') or 'Unassigned'}, "
-            f"Held on: {m.get('date') or 'not recorded'})"
-        )
-        if len(lines) >= _MAX_DETAIL_MEETINGS:
-            break
-    if not lines:
-        return ""
-    return "Database Records - Meeting Details (dates and times are UTC):\n" + "\n".join(lines) + "\n\n---\n"
-
-def build_catalog_records(
-    *,
-    query_lower: str,
-    force_all: bool,
-    available_projects: list[dict[str, Any]],
-    available_meetings: list[dict[str, Any]],
-    available_speakers: list[str],
-    scoped_to_meeting: bool,
-    project_id: str | None,
-    has_speakers: bool,
-) -> tuple[str, list[str]]:
-    """
-    Builds the verified database catalog blocks for the synthesis prompt.
-    `force_all` is set for catalog-intent questions: the records are always supplied, no matter how the question is worded. Otherwise each block is added only when the question mentions its entity. Counts are computed here so the model never has to count.
-    """
-    context = ""
-    instructions: list[str] = []
-    mentions = lambda *words: any(w in query_lower for w in words)  # noqa: E731
-
-    # Projects (with deterministic meeting counts per project)
-    if available_projects and (force_all or mentions("project")):
-        per_project: dict[str, int] = {}
-        unassigned = 0
-        for m in available_meetings:
-            if m.get("project_id"):
-                per_project[m["project_id"]] = per_project.get(m["project_id"], 0) + 1
-            else:
-                unassigned += 1
-        active = [p for p in available_projects if (p.get("status") or "").upper() == "ACTIVE"]
-        lines = "\n".join(
-            f"- **{p['name']}** (ID: {p['id']}, Status: {p.get('status', 'ACTIVE')}, "
-            f"Meetings: {per_project.get(p['id'], 0)})"
-            for p in available_projects
-        )
-        counts = ", ".join(f"{pid}: {n}" for pid, n in sorted(per_project.items()))
-        if unassigned:
-            counts += f"{', ' if counts else ''}Unassigned: {unassigned}"
-        context += (
-            f"Database Catalog - Projects ({len(available_projects)} total, {len(active)} active):\n{lines}\n"
-            f"Verified meeting counts per project (computed from the database): {counts or 'none'}; "
-            f"total meetings: {len(available_meetings)}\n\n---\n"
-        )
-        instructions.append(
-            "- Answer project and meeting-count questions using the verified Database Catalog above. Use the computed meeting counts exactly as given; do not recount or estimate."
-        )
-
-    # Meetings
-    general_meeting_query = mentions("meeting") and mentions("all", "list", "how many", "which", "available", "recorded", "what meetings")
-    if available_meetings and (force_all or general_meeting_query) and not scoped_to_meeting and not has_speakers:
-        rows = available_meetings[:_MAX_CATALOG_MEETING_ROWS]
-        mtg_lines = "\n".join(
-            f"- **{m['title']}** (ID: {m['id']}, Project: {m.get('project_id') or 'Unassigned'}, "
-            f"Held on: {m.get('date') or 'not recorded'})"
-            for m in rows
-        )
-        more = (
-            f"\n(+{len(available_meetings) - len(rows)} more meetings not listed; the total above is exact)"
-            if len(available_meetings) > len(rows) else ""
-        )
-        context += (
-            f"Database Catalog - Complete List of Meetings ({len(available_meetings)} total):\n{mtg_lines}{more}\n\n---\n"
-        )
-        instructions.append(
-            f"- The catalog lists {len(available_meetings)} meetings in total. When the user asks to list or count meetings, "
-            "state the exact number and name the meetings with their IDs."
-        )
-
-    # Participants
-    participant_query = mentions("speaker", "participant", "attendee", "participate", "attend") and mentions(
-        "all", "list", "how many", "who", "which", "available"
-    )
-    if available_speakers and (force_all or participant_query):
-        proj_str = f" for Project '{project_id}'" if project_id else ""
-        spk_lines = "\n".join(f"- {s}" for s in available_speakers)
-        context += (
-            f"Database Catalog - Participants / Speakers ({len(available_speakers)} total{proj_str}):\n{spk_lines}\n\n---\n"
-        )
-        instructions.append(
-            f"- When asked about participants/speakers{proj_str}, enumerate them from the verified Database Catalog above."
-        )
-
-    return context, instructions
 
 # ============================================================================
 # Node 4: LLM Synthesis Node
@@ -179,12 +92,16 @@ async def llm_synthesis_node(state: ChatState) -> dict[str, Any]:
     available_speakers = state.get("available_speakers") or []
     relevant_meetings = state.get("relevant_meetings") or []
 
-    # Build prompt context blocks from retrieved transcript turns
+    # Build prompt context blocks from retrieved transcript turns, each with its meeting's date
+    m_date_map = {m["id"]: m.get("date") for m in available_meetings if m.get("id")}
     context_blocks = []
     for i, c in enumerate(retrieved_chunks):
         m_title_str = c.get("meeting_title") or c.get("meeting_id") or "Meeting"
+        m_id = c.get("meeting_id") or ""
+        m_date_str = c.get("meeting_date") or m_date_map.get(m_id) or c.get("date") or "not recorded"
         context_blocks.append(
-            f"[{i+1}] Meeting: {m_title_str} (ID: {c.get('meeting_id')}) | Topic: {c.get('topic_context')} | Speaker: {c['speaker']} ({c['timestamp']})\n"
+            f"[{i+1}] Meeting: {m_title_str} (ID: {m_id}) | Held on: {m_date_str} | Topic: {c.get('topic_context')} | "
+            f"Speaker: {c['speaker']} ({c['timestamp']})\n"
             f"Quote: \"{c['text']}\""
         )
     formatted_context = "\n---\n".join(context_blocks)
@@ -201,13 +118,20 @@ async def llm_synthesis_node(state: ChatState) -> dict[str, Any]:
     )
 
     # Meeting date/time: for the scoped meeting, or the meetings behind the retrieved excerpts
-    detail_ids = [state["meeting_id"]] if state.get("meeting_id") else [c.get("meeting_id") for c in retrieved_chunks]
+    if state.get("meeting_id"):
+        detail_ids = [state["meeting_id"]]
+    else:
+        detail_ids = list(state.get("date_meeting_ids") or []) + [c.get("meeting_id") for c in retrieved_chunks]
     meeting_details = build_meeting_details(available_meetings, [i for i in detail_ids if i])
     if meeting_details:
         extra_record_context += meeting_details
         list_instructions.append(
             "- The Meeting Details records give each meeting's date and time (UTC). Use them when asked when a meeting "
             "took place; if a meeting shows 'not recorded', say its date is not recorded."
+        )
+        list_instructions.append(
+            "- If the user asks about the 'last meeting' or 'latest discussion', ground your answer in the "
+            "chronologically newest meeting from the verified Meeting Details records above."
         )
 
     # 4. Participant Involvement
@@ -250,7 +174,7 @@ async def llm_synthesis_node(state: ChatState) -> dict[str, Any]:
 
     llm_client = get_openrouter_client()
     messages = [
-        {"role": "system", "content": UNIVERSAL_RAG_SYSTEM_PROMPT},
+        {"role": "system", "content": get_system_prompt()},
         {"role": "user", "content": user_prompt},
     ]
 
@@ -381,10 +305,16 @@ async def fallback_node(state: ChatState) -> dict[str, Any]:
     query = state.get("query", "")
     logger.warning(f"[LANGGRAPH: FALLBACK] Zero matching transcript excerpts found in vector database for query '{query}'.")
 
-    fallback_answer = (
-        "Based on the ingested meeting records, no relevant discussions or transcript excerpts were found "
-        "matching your inquiry. Please ensure the relevant meeting has been processed or try rephrasing."
-    )
+    if state.get("no_meeting_on_date"):
+        fallback_answer = (
+            f"No meetings are recorded for {state['no_meeting_on_date']}. "
+            "Ask about a different date, or ask for a list of the recorded meetings."
+        )
+    else:
+        fallback_answer = (
+            "Based on the ingested meeting records, no relevant discussions or transcript excerpts were found "
+            "matching your inquiry. Please ensure the relevant meeting has been processed or try rephrasing."
+        )
 
     return {
         "answer": fallback_answer,

@@ -60,12 +60,6 @@ def resolve_project_id(db: Session, user_id: str, project_id: str | None) -> str
     return scoped
 
 
-def project_taken(db: Session, user_id: str, project_id: str) -> bool:
-    """Under virtual namespacing, project names/IDs are scoped per user account,
-    so another account having a project with the same name never blocks this account."""
-    return False
-
-
 def meeting_taken(db: Session, user_id: str, meeting_id: str) -> bool:
     """True if the meeting ID exists and belongs to someone else."""
     meeting = db.query(MeetingModel).filter(MeetingModel.id == meeting_id).first()

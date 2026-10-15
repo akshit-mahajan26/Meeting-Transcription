@@ -25,7 +25,8 @@ MEETING_STOP_WORDS = {
     "point", "points", "key", "action", "item", "items", "decision", "decisions",
     "discussion", "discussions", "review", "sync", "call", "meeting", "meetings",
     "transcript", "transcripts", "overview", "details", "detail", "update", "updates",
-    "hello", "hi", "hey", "direct", "test"
+    "hello", "hi", "hey", "direct", "test",
+    "calls", "syncs", "reviews", "session", "sessions", "standup", "standups"
 }
 
 
@@ -135,7 +136,6 @@ def is_name_token_match(token: str, candidate: str) -> bool:
 def resolve_speakers_from_query(
     query: str,
     speakers_db: list[str],
-    meeting_tokens: set[str] | None = None,
     project_tokens: set[str] | None = None,
 ) -> list[tuple[str, str, str]]:
     """
@@ -216,10 +216,13 @@ def resolve_speakers_from_query(
 def resolve_meeting_from_query(
     query: str,
     meetings_db: list[tuple[str, str]],
-    matched_speaker_phrase: str | None = None
+    matched_speaker_phrase: str | None = None,
+    available_meetings: list[dict[str, Any]] | None = None,
 ) -> tuple[str | None, str | None, str]:
     """
-    Identifies if a specific meeting title or ID is mentioned in the query.
+    Identifies if a specific meeting title or ID, or a relative reference such as "the last meeting",
+    is mentioned in the query. A date ("June 12", "yesterday") is resolved by the caller, which can
+    return several meetings.
     Returns (resolved_meeting_id, resolved_meeting_title, reasoning_log).
     """
     q_lower = query.lower()
@@ -241,6 +244,25 @@ def resolve_meeting_from_query(
         if m_id and m_id.lower() in q_lower:
             m_title_clean = (m_title or m_id).strip()
             return m_id, m_title_clean, f"Scoped to meeting '{m_title_clean}' ({m_id})"
+
+    # 2. Relative query resolution ("last meeting", "latest call", "previous sync"); dates are handled by the caller
+    rel_pat = (
+        r"\b(?:last|latest|most recent|recent|previous)\s+"
+        r"(?:meeting|call|discussion|sync|session|standup|one)\b"
+    )
+    if available_meetings and re.search(rel_pat, q_for_meeting):
+        dated = [m for m in available_meetings if m.get("date") and m["date"] != "not recorded"]
+        pool = dated if dated else available_meetings
+        if pool:
+            sorted_pool = sorted(pool, key=lambda x: str(x.get("date") or ""), reverse=True)
+            newest = sorted_pool[0]
+            m_id = newest.get("id")
+            m_title = (newest.get("title") or m_id or "").strip()
+            return (
+                m_id,
+                m_title,
+                f"Auto-scoped to most recent meeting '{m_title}' ({m_id}) based on relative temporal query",
+            )
 
     best_score = 0
     best_m_id = None
@@ -341,6 +363,8 @@ class ChatState(TypedDict, total=False):
     skip_retrieval: bool
     project_id: str | None
     meeting_id: str | None
+    date_meeting_ids: list[str] | None  # meetings sharing the date the question asks about
+    no_meeting_on_date: str | None  # the requested date, when no meeting was held on it
     extracted_speaker: str | None
     extracted_speakers: list[str] | None
     query_embedding: list[float]

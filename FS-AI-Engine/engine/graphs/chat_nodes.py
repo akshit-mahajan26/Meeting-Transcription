@@ -12,8 +12,10 @@ Implements the modular node functions executed within the ChatState StateGraph:
 
 from __future__ import annotations
 
+import calendar
 import logging
 import re
+from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
 from sqlalchemy import text
@@ -33,14 +35,12 @@ from .chat_query import (
     resolve_meeting_from_query,
     resolve_speakers_from_query,
 )
+from .chat_records import build_catalog_records, format_meeting_date
 from .chat_retrieval import embed_query_node, enrich_chunk_text, vector_retrieval_node
 from .chat_synthesis import (
-    UNIVERSAL_RAG_SYSTEM_PROMPT,
     align_citations_with_answer,
-    build_catalog_records,
     fallback_node,
     format_citations_node,
-    format_meeting_date,
     llm_synthesis_node,
 )
 
@@ -51,7 +51,6 @@ logger = logging.getLogger("fs-ai-engine.chat_graph")
 __all__ = [
     "MEETING_STOP_WORDS",
     "ORGANIZATIONAL_COMMON_WORDS",
-    "UNIVERSAL_RAG_SYSTEM_PROMPT",
     "ChatState",
     "QueryIntent",
     "align_citations_with_answer",
@@ -78,6 +77,103 @@ def _unscope_proj(pid: str | None) -> str | None:
     return pid
 
 
+# Date resolution: which meetings does the question's date refer to?
+
+# Names come from the calendar module; 'sept' is the one common abbreviation it lacks
+_MONTHS = {
+    **{n.lower(): i for i, n in enumerate(calendar.month_name) if n},
+    **{n.lower(): i for i, n in enumerate(calendar.month_abbr) if n},
+    "sept": 9,
+}
+_MONTH_RE = "|".join(sorted(_MONTHS, key=len, reverse=True))
+_ISO_DATE_RE = re.compile(r"\b(\d{4})-(\d{2})-(\d{2})\b")
+_MONTH_FIRST_RE = re.compile(rf"\b({_MONTH_RE})\.?\s+(\d{{1,2}})(?:st|nd|rd|th)?(?:,?\s+(\d{{4}}))?\b")
+_DAY_FIRST_RE = re.compile(rf"\b(\d{{1,2}})(?:st|nd|rd|th)?\s+(?:of\s+)?({_MONTH_RE})\.?(?:,?\s+(\d{{4}}))?\b")
+_NOUN = r"(?:meeting|call|discussion|sync|session|standup)s?"
+# 'today'/'yesterday' only count when they describe a meeting; "the outage yesterday" is not a date filter
+_RELATIVE_DAY_RE = re.compile(
+    rf"\b(today|yesterday)(?:'s)?\s+{_NOUN}\b|\b{_NOUN}\s+(?:(?:was|were|held|from|on|of)\s+)?(today|yesterday)\b"
+    r"|\b(?:happened|discussed|covered|talked about|held)\s+(today|yesterday)\b"
+)
+
+
+def _safe_date(year: int, month: int, day: int) -> date | None:
+    try:
+        return date(year, month, day)
+    except ValueError:
+        return None
+
+
+def _meeting_days(meetings: list[dict[str, Any]]) -> list[tuple[dict[str, Any], date]]:
+    """Each meeting that has a readable date, paired with its calendar day."""
+    days = []
+    for meeting in meetings:
+        found = _ISO_DATE_RE.search(str(meeting.get("date") or ""))
+        day = _safe_date(int(found[1]), int(found[2]), int(found[3])) if found else None
+        if day:
+            days.append((meeting, day))
+    return days
+
+
+def _written_date(q: str) -> tuple[date | None, tuple[int, int] | None, str | None]:
+    """A written date as (exact date, (month, day) when no year was given, label); all None if there is none."""
+    iso = _ISO_DATE_RE.search(q)
+    if iso:
+        exact = _safe_date(int(iso[1]), int(iso[2]), int(iso[3]))
+        if exact:
+            return exact, None, exact.isoformat()
+    for pattern, month_at, day_at in ((_MONTH_FIRST_RE, 1, 2), (_DAY_FIRST_RE, 2, 1)):
+        found = pattern.search(q)
+        if not found:
+            continue
+        month, day = _MONTHS[found[month_at]], int(found[day_at])
+        if found[3]:
+            exact = _safe_date(int(found[3]), month, day)
+            if exact:
+                return exact, None, exact.isoformat()
+        elif _safe_date(2000, month, day):  # 2000 is a leap year, so Feb 29 is accepted
+            return None, (month, day), f"{calendar.month_name[month]} {day}"
+    return None, None, None
+
+
+def _relative_day(q: str, today: date) -> date | None:
+    """'today' or 'yesterday' when the question uses it to describe a meeting, worked out from `today`."""
+    found = _RELATIVE_DAY_RE.search(q)
+    if not found:
+        return None
+    word = next(group for group in found.groups() if group)
+    return today if word == "today" else today - timedelta(days=1)
+
+
+def meetings_on_requested_date(
+    query: str, meetings: list[dict[str, Any]], today: date | None = None
+) -> tuple[list[dict[str, Any]], str | None]:
+    """
+    Meetings held on the calendar date the question asks about, oldest first, plus a label for that date.
+
+    The date is a written one (2026-06-12, "June 12", "12th of June 2026") or 'today'/'yesterday', worked out
+    from the current date. Only the day matters, not the time. The label is None when the question names no date;
+    with a label and an empty list, no meeting was held that day. A month and day without a year use the newest
+    year that has a meeting on that day.
+    """
+    q = query.lower()
+    today = today or datetime.now(UTC).date()
+
+    exact, month_day, label = _written_date(q)
+    if label is None:
+        exact = _relative_day(q, today)
+        label = exact.isoformat() if exact else None
+    if label is None:
+        return [], None
+
+    held = _meeting_days(meetings)
+    if month_day:
+        years = [day.year for _, day in held if (day.month, day.day) == month_day]
+        exact = _safe_date(max(years, default=today.year), *month_day)
+    matched = [meeting for meeting, day in held if day == exact]
+    return sorted(matched, key=lambda m: str(m.get("date") or "")), label
+
+
 # ============================================================================
 # Node 1: Extract Filters Node
 # ============================================================================
@@ -94,6 +190,8 @@ async def extract_filters_node(state: ChatState) -> dict[str, Any]:
     resolved_speakers: list[str] = _state_speakers(state)
 
     resolved_meeting_id = state.get("meeting_id")
+    date_meeting_ids: list[str] | None = None  # several meetings share the requested date
+    no_meeting_on_date: str | None = None  # the requested date, when no meeting was held on it
     relevant_meetings: list[dict[str, Any]] = []
     available_meetings: list[dict[str, Any]] = []
     available_projects: list[dict[str, Any]] = []
@@ -147,14 +245,7 @@ async def extract_filters_node(state: ChatState) -> dict[str, Any]:
                 except Exception:
                     pass
 
-            # Dynamically derive meeting & project title tokens from database records
-            db_meeting_tokens = {
-                w.lower()
-                for title in (m[1] for m in meetings_db)
-                if title
-                for w in re.findall(r"[a-zA-Z0-9_\-]+", title)
-                if len(w) > 2 and w.lower() not in MEETING_STOP_WORDS
-            }
+            # Dynamically derive project title tokens from database records
             db_project_tokens = {
                 w.lower()
                 for p in available_projects
@@ -185,7 +276,7 @@ async def extract_filters_node(state: ChatState) -> dict[str, Any]:
             available_speakers = [r[0] for r in spk_res.fetchall() if r[0]]
 
             if not resolved_speakers:
-                found_speakers = resolve_speakers_from_query(query, available_speakers, db_meeting_tokens, db_project_tokens)
+                found_speakers = resolve_speakers_from_query(query, available_speakers, db_project_tokens)
                 if found_speakers:
                     resolved_speakers = [s[0] for s in found_speakers]
                     resolved_speaker = resolved_speakers[0]
@@ -199,10 +290,25 @@ async def extract_filters_node(state: ChatState) -> dict[str, Any]:
                 m_title = meetings_dict.get(resolved_meeting_id, resolved_meeting_id)
                 reasoning = f"Scoped to meeting '{m_title}' ({resolved_meeting_id})"
             else:
-                m_id, m_title, meeting_reasoning = resolve_meeting_from_query(query, m_db_pairs, matched_spk_phrase)
-                if m_id:
-                    resolved_meeting_id = m_id
-                    reasoning = meeting_reasoning
+                on_date, date_label = meetings_on_requested_date(query, available_meetings)
+                if len(on_date) == 1:
+                    resolved_meeting_id = on_date[0]["id"]
+                    reasoning = (
+                        f"Scoped to the meeting held on {date_label}: '{on_date[0]['title']}' ({resolved_meeting_id})"
+                    )
+                elif on_date:
+                    date_meeting_ids = [m["id"] for m in on_date]
+                    reasoning = f"{len(on_date)} meetings were held on {date_label}; searching all of them"
+                elif date_label:
+                    no_meeting_on_date = date_label
+                    reasoning = f"No meeting was held on {date_label}"
+                else:
+                    m_id, m_title, meeting_reasoning = resolve_meeting_from_query(
+                        query, m_db_pairs, matched_spk_phrase, available_meetings=available_meetings
+                    )
+                    if m_id:
+                        resolved_meeting_id = m_id
+                        reasoning = meeting_reasoning
 
             # 4. Classify Query Intent (Generic Intent Classification)
             query_intent = classify_query_intent(query, resolved_speakers)
@@ -281,6 +387,8 @@ async def extract_filters_node(state: ChatState) -> dict[str, Any]:
         "extracted_speaker": resolved_speaker,
         "extracted_speakers": resolved_speakers,
         "meeting_id": resolved_meeting_id,
+        "date_meeting_ids": date_meeting_ids,
+        "no_meeting_on_date": no_meeting_on_date,
         "project_id": project_id,
         "available_meetings": available_meetings,
         "available_projects": available_projects,

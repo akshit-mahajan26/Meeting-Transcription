@@ -30,7 +30,9 @@ def format_meeting_date(value: str | None) -> str:
     if not value:
         return "—"
     try:
-        return datetime.fromisoformat(value).astimezone(UTC).strftime("%d %b %Y, %H:%M UTC")
+        parsed = datetime.fromisoformat(value)
+        parsed = parsed.astimezone(UTC) if parsed.tzinfo else parsed.replace(tzinfo=UTC)
+        return parsed.strftime("%d %b %Y, %H:%M UTC")
     except ValueError:
         return str(value)
 
@@ -91,3 +93,4 @@ def chat_to_markdown(messages: list[dict[str, Any]]) -> str:
                 )
             lines.append("")
     return "\n".join(lines)
+
