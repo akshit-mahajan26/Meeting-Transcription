@@ -361,6 +361,8 @@ class ChatState(TypedDict, total=False):
     user_id: str
     query_intent: str
     skip_retrieval: bool
+    history: list[dict[str, str]]  # recent conversation turns, oldest first
+    used_sources: list[int] | None  # excerpt numbers the LLM reports relying on (None = not reported)
     project_id: str | None
     meeting_id: str | None
     date_meeting_ids: list[str] | None  # meetings sharing the date the question asks about

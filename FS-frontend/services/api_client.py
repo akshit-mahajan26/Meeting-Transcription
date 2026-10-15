@@ -101,6 +101,7 @@ class MeetingIntelligenceClient:
         project_id: str | None = None,
         speaker: str | None = None,
         meeting_id: str | None = None,
+        history: list[dict[str, str]] | None = None,
         **kwargs
     ) -> dict[str, Any]:
         """
@@ -118,7 +119,8 @@ class MeetingIntelligenceClient:
             "query": prompt.strip(),
             "project_id": project_id if project_id else None,
             "speaker": speaker if speaker else None,
-            "meeting_id": meeting_id if meeting_id else None
+            "meeting_id": meeting_id if meeting_id else None,
+            "history": history or [],
         }
 
         try:

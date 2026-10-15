@@ -16,9 +16,19 @@ SUGGESTIONS = [
 ]
 
 
-def _ask(question: str, scope: Scope) -> dict:
+def build_chat_history(messages: list[dict], max_questions: int = 5) -> list[dict[str, str]]:
+    """The most recent `max_questions` user questions with the answers that followed (role + text only)."""
+    if max_questions <= 0:
+        return []
+    usable = [m for m in messages if m.get("content") and not m.get("error")]
+    asked = [i for i, m in enumerate(usable) if m["role"] == "user"]
+    start = asked[-max_questions] if len(asked) > max_questions else 0
+    return [{"role": m["role"], "content": m["content"]} for m in usable[start:]]
+
+
+def _ask(question: str, scope: Scope, chat_history: list[dict[str, str]]) -> dict:
     res = api_client.query_backend(
-        question, project_id=scope.project_id, speaker=scope.speaker, meeting_id=scope.meeting_id
+        question, project_id=scope.project_id, speaker=scope.speaker, meeting_id=scope.meeting_id, history=chat_history
     )
     if not res.get("success", True):
         return {"role": "assistant", "error": res.get("error", "An error occurred."), "content": res["answer"], "citations": []}
@@ -71,13 +81,14 @@ def render() -> None:
         )
 
     if question:
+        chat_history = build_chat_history(messages)  # taken before the new question is appended; use [] to turn history off
         user_msg = {"role": "user", "content": question}
         messages.append(user_msg)
         with box:
             _render(user_msg)
             with st.chat_message("assistant", avatar=":material/smart_toy:"):
                 with st.spinner("Searching transcripts and synthesizing a grounded answer…"):
-                    answer = _ask(question, scope)
+                    answer = _ask(question, scope, chat_history)
         messages.append(answer)
         st.rerun()  # history loop above renders the stored answer
 

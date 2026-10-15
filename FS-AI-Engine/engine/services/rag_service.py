@@ -24,6 +24,8 @@ class CitationModel(BaseModel):
     meeting_id: str
     exact_raw_text: str
     topic_context: str | None = "Level 1 Turn"
+    citation_type: str = "turn"
+    meeting_title: str | None = None
 
 
 class RAGQueryResponse(BaseModel):
@@ -45,6 +47,7 @@ async def process_user_query(
     meeting_id: str | None = None,
     speaker: str | None = None,
     top_k: int = 5,
+    history: list[dict[str, str]] | None = None,
 ) -> RAGQueryResponse:
     """Answer a question with the chat graph. Errors propagate to the caller (no hidden second pipeline)."""
     clean_query = query.strip()
@@ -59,6 +62,7 @@ async def process_user_query(
         meeting_id=meeting_id,
         speaker=speaker,
         top_k=top_k,
+        history=history,
     )
 
     citations = [
@@ -69,6 +73,8 @@ async def process_user_query(
             meeting_id=c.get("meeting_id", ""),
             exact_raw_text=c.get("exact_raw_text", ""),
             topic_context=c.get("topic_context", "Level 1 Turn"),
+            citation_type=c.get("citation_type", "turn"),
+            meeting_title=c.get("meeting_title") or None,
         )
         for c in graph_res.get("citations", [])
     ]

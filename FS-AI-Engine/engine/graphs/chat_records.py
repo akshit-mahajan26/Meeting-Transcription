@@ -48,7 +48,7 @@ def build_meeting_details(available_meetings: list[dict[str, Any]], meeting_ids:
         if not m:
             continue
         lines.append(
-            f"- **{m['title']}** (ID: {m['id']}, Project: {m.get('project_id') or 'Unassigned'}, "
+            f"- **{m['title']}** (Project: {m.get('project_id') or 'Unassigned'}, "
             f"Held on: {m.get('date') or 'not recorded'})"
         )
     if not lines:
@@ -112,7 +112,7 @@ def build_catalog_records(
     if available_meetings and (force_all or general_meeting_query) and not scoped_to_meeting and not has_speakers:
         rows = available_meetings[:_MAX_CATALOG_MEETING_ROWS]
         mtg_lines = "\n".join(
-            f"- **{m['title']}** (ID: {m['id']}, Project: {m.get('project_id') or 'Unassigned'}, "
+            f"- **{m['title']}** (Project: {m.get('project_id') or 'Unassigned'}, "
             f"Held on: {m.get('date') or 'not recorded'})"
             for m in rows
         )
@@ -128,7 +128,7 @@ def build_catalog_records(
         instructions.append(
             f"- The catalog lists {len(available_meetings)} meetings in total. "
             "When the user asks to list or count meetings, "
-            "state the exact number and name the meetings with their IDs."
+            "state the exact number and name the meetings by title."
         )
 
     # Participants

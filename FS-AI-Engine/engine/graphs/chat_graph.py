@@ -116,6 +116,7 @@ async def run_chat_graph(
     meeting_id: str | None = None,
     speaker: str | None = None,
     top_k: int = 5,
+    history: list[dict[str, str]] | None = None,
 ) -> dict[str, Any]:
     """
     Entrypoint invoked by FastAPI engine routers.
@@ -134,6 +135,7 @@ async def run_chat_graph(
         "project_id": project_id,
         "meeting_id": meeting_id,
         "extracted_speaker": speaker,
+        "history": history or [],
         "query_embedding": [],
         "retrieved_chunks": [],
         "answer": "",

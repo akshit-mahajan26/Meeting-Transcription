@@ -60,30 +60,32 @@ def render_citations(citations: list[dict[str, Any]]) -> None:
 
     chips = '<div class="sources"><span class="sources-label">Sources</span>'
     for i, c in enumerate(citations, 1):
-        spk = c.get("speaker") or "Unknown"
         t = format_timestamp(c.get("start_time"))
+        label = c.get("meeting_title") or "Meeting"
+        tip = f"{label} at {t}"
         chips += (
-            f'<span class="chip" title="{esc(spk)} at {t}"><span class="chip-num">[{i}]</span>'
-            f"{esc(spk)}<span class=\"chip-time\">{t}</span></span>"
+            f'<span class="chip" title="{esc(tip)}"><span class="chip-num">[{i}]</span>'
+            f"{esc(label)}<span class=\"chip-time\">{t}</span></span>"
         )
     st.markdown(chips + "</div>", unsafe_allow_html=True)
 
-    with st.expander(f"Inspect source excerpts ({len(citations)})", icon=":material/format_quote:"):
-        for i, c in enumerate(citations, 1):
+    quoted = [c for c in citations if c.get("exact_raw_text")]
+    if not quoted:
+        return
+    with st.expander(f"Inspect source excerpts ({len(quoted)})", icon=":material/format_quote:"):
+        for i, c in enumerate(quoted, 1):
             span = f"{format_timestamp(c.get('start_time'))} – {format_timestamp(c.get('end_time'))}"
-            mid = c.get("meeting_id") or ""
             st.markdown(
                 f"""
                 <div class="cite">
                   <div class="cite-head">
                     <div><span class="chip-num">[{i}]</span>
-                      <span class="cite-speaker">{esc(c.get("speaker") or "Unknown")}</span>
-                      <span class="cite-ctx"> · {esc(c.get("topic_context") or "Level 1 turn")}</span></div>
+                      <span class="cite-speaker">{esc(c.get("meeting_title") or "Meeting")}</span>
+                      <span class="cite-ctx"> · {esc(c.get("speaker") or "Unknown")}</span></div>
                     <span class="cite-time">{span}</span>
                   </div>
                   <div class="cite-quote">“{esc(c.get("exact_raw_text"))}”</div>
-                  <div class="cite-foot"><span>Meeting <code>{esc(mid[:16])}{"…" if len(mid) > 16 else ""}</code></span>
-                    <span style="color:var(--good)">Verified provenance</span></div>
+                  <div class="cite-foot"><span style="color:var(--good)">Verified provenance</span></div>
                 </div>
                 """,
                 unsafe_allow_html=True,

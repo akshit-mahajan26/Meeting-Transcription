@@ -87,9 +87,10 @@ def chat_to_markdown(messages: list[dict[str, Any]]) -> str:
         else:
             lines += [f"**Assistant:** {msg.get('content', '')}", ""]
             for i, c in enumerate(msg.get("citations") or [], 1):
+                who = c.get("meeting_title") if c.get("citation_type") == "meeting" else c.get("speaker")
                 lines.append(
-                    f"> [{i}] {c.get('speaker') or 'Unknown'} @ "
-                    f"{format_timestamp(c.get('start_time'))}: {c.get('exact_raw_text') or ''}"
+                    f"> [{i}] {who or c.get('meeting_id') or 'Unknown'} @ "
+                    f"{format_timestamp(c.get('start_time'))}: {c.get('exact_raw_text') or ''}".rstrip(": ")
                 )
             lines.append("")
     return "\n".join(lines)

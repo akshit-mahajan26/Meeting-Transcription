@@ -152,7 +152,12 @@ class OpenRouterClient:
                 # Format system message + user messages for Google GenAI
                 sys_parts = [m["content"] for m in messages if m.get("role") == "system"]
                 sys_instruction = "\n".join(sys_parts) if sys_parts else None
-                user_content = "\n\n".join(m["content"] for m in messages if m.get("role") != "system")
+                # Keep conversation roles (the GenAI SDK calls the assistant "model")
+                user_content = [
+                    {"role": "model" if m.get("role") == "assistant" else "user", "parts": [{"text": m["content"]}]}
+                    for m in messages
+                    if m.get("role") != "system"
+                ]
 
                 config = {}
                 if sys_instruction:
@@ -182,7 +187,7 @@ class OpenRouterClient:
         Strictly avoids raw transcript turn dumps in the answer narrative.
         """
         user_parts = [m.get('content', '') for m in messages if m.get('role') == 'user']
-        user_prompt = chr(10).join(user_parts)
+        user_prompt = user_parts[-1] if user_parts else ''  # current question only, not earlier history turns
         lower_prompt = user_prompt.lower()
 
         # 1. Conversational Grounded Synthesis for Meeting Excerpts & Context

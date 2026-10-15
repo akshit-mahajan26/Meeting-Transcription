@@ -8,7 +8,7 @@ Contains ZERO AI orchestration, embedding generation, pgvector search, or LLM lo
 
 import contextlib
 import logging
-from typing import Any
+from typing import Any, Literal
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -27,11 +27,19 @@ settings = get_settings()
 
 
 
+class HistoryMessage(BaseModel):
+    role: Literal["user", "assistant"]
+    content: str = Field(..., max_length=8000)
+
+
 class QueryRequest(BaseModel):
     query: str = Field(..., description="Natural language question or search query")
     project_id: str | None = Field(default=None, description="Optional project boundary filter")
     meeting_id: str | None = Field(default=None, description="Optional meeting filter")
     speaker: str | None = Field(default=None, description="Optional speaker filter")
+    history: list[HistoryMessage] = Field(
+        default_factory=list, max_length=50, description="Recent conversation turns, oldest first (trimmed by the client)"
+    )
 
 
 class Citation(BaseModel):
@@ -41,6 +49,8 @@ class Citation(BaseModel):
     meeting_id: str
     exact_raw_text: str
     topic_context: str | None = "Level 1 Turn"
+    citation_type: str = "turn"  # "turn" (quoted turn) or "meeting" (meeting + timestamp only)
+    meeting_title: str | None = None
 
 
 class QueryResponse(BaseModel):
@@ -85,6 +95,7 @@ async def proxy_query_endpoint(
         "project_id": scoped_project_id,
         "meeting_id": request.meeting_id,
         "speaker": request.speaker,
+        "history": [m.model_dump() for m in request.history],
         "user_id": user.id,  # always the authenticated account, never client-supplied
     }
 
