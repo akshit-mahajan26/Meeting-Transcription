@@ -56,7 +56,6 @@ class Citation(BaseModel):
 class QueryResponse(BaseModel):
     query: str
     routing_mode: str
-    routing_confidence: float
     routing_reasoning: str
     answer: str
     citations: list[Citation] = Field(default_factory=list)

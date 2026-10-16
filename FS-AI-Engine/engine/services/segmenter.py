@@ -6,7 +6,7 @@ from collections import Counter
 
 from ..core.config import Settings, get_settings
 from ..models.schemas import SpeakerTurn, TopicSegment
-from .llm_client import OpenRouterClient, openrouter_client
+from .llm_client import LLMClient, llm_client_instance
 
 logger = logging.getLogger(__name__)
 
@@ -46,9 +46,9 @@ class TopicSegmenter:
     6. Produces validated TopicSegment models conforming to mtg_<id>_seg_<NN>.
     """
 
-    def __init__(self, settings: Settings | None = None, llm_client: OpenRouterClient | None = None):
+    def __init__(self, settings: Settings | None = None, llm_client: LLMClient | None = None):
         self.settings = settings or get_settings()
-        self.llm_client = llm_client or openrouter_client
+        self.llm_client = llm_client or llm_client_instance
         self.similarity_threshold = self.settings.topic_similarity_threshold
         self.min_turns = self.settings.min_turns_per_segment
         self.max_turns = self.settings.max_turns_per_segment

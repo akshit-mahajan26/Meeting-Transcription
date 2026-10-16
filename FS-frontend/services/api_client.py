@@ -138,7 +138,6 @@ class MeetingIntelligenceClient:
                         "success": True,
                         "query": data.get("query", prompt),
                         "routing_mode": data.get("routing_mode", "UNKNOWN"),
-                        "routing_confidence": data.get("routing_confidence", 1.0),
                         "routing_reasoning": data.get("routing_reasoning", ""),
                         "answer": data.get("answer", "No answer provided by the model."),
                         "citations": data.get("citations", []),

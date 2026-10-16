@@ -54,14 +54,9 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices("LLM_MODEL_NAME", "LLM_MODEL", "llm_model"),
         description="Primary LLM model string (e.g. gemini-2.5-flash, gemini-2.0-flash)",
     )
-    llm_temperature: float = Field(
-        default=0.0,
-        description="Sampling temperature for deterministic boundary verification",
-    )
-
     # Embedding Configuration
     embedding_model: str = Field(
-        default="text-embedding-3-small",
+        default="gemini-embedding-001",
         validation_alias=AliasChoices("EMBEDDING_MODEL", "embedding_model", "EMBEDDING_MODEL_NAME"),
         description="Model name for high-dimensional vector embeddings",
     )
@@ -71,49 +66,14 @@ class Settings(BaseSettings):
         description="Vector dimension matching embedding model and pgvector column definition",
     )
 
-    # Boundary Detection & Chunking Parameters
-    boundary_similarity_threshold: float = Field(
-        default=0.75,
-        validation_alias=AliasChoices("BOUNDARY_SIMILARITY_THRESHOLD", "boundary_similarity_threshold"),
-        description="Cosine similarity threshold below which a topic shift candidate is triggered",
-    )
-    max_turn_tokens: int = Field(
-        default=400,
-        validation_alias=AliasChoices("MAX_TURN_TOKENS", "max_turn_tokens"),
-        description="Maximum token length for atomic speaker turns before triggering sub-splitting",
-    )
-    chunk_overlap_sentences: int = Field(
-        default=2,
-        validation_alias=AliasChoices("CHUNK_OVERLAP_SENTENCES", "chunk_overlap_sentences"),
-        description="Sentence overlap window between consecutive sub-chunks",
-    )
-
-    # Backward Compatibility & Dynamic Accessors
+    # Segmentation Parameters
     topic_similarity_threshold: float = Field(default=0.55)
     min_turns_per_segment: int = Field(default=2)
     max_turns_per_segment: int = Field(default=10)
-    llm_provider: str = Field(default="openrouter")
-    llm_api_key: str | None = Field(default=None)
-
-    @property
-    def openrouter_api_key(self) -> str | None:
-        return self.OPENROUTER_API_KEY
-
-    @property
-    def openrouter_base_url(self) -> str:
-        return self.OPENROUTER_BASE_URL
 
     @property
     def llm_model(self) -> str:
         return self.LLM_MODEL_NAME
-
-    @property
-    def EMBEDDING_MODEL_NAME(self) -> str:
-        return self.embedding_model
-
-    @property
-    def EMBEDDING_DIMENSION(self) -> int:
-        return self.embedding_dimensions
 
     model_config = SettingsConfigDict(
         env_file=[str(ENGINE_DIR / ".env"), ".env"],

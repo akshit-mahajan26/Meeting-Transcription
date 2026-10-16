@@ -23,20 +23,10 @@ class EmbeddingService:
 
     def __init__(self, config: Settings | None = None):
         self.config = config or settings
-        # Prefer GEMINI_API_KEY for Google Gemini universal routing
-        self.api_key = (
-            self.config.GEMINI_API_KEY
-            or getattr(self.config, "openai_api_key", None)
-            or self.config.OPENROUTER_API_KEY
-        )
-        gemini_default_url = "https://generativelanguage.googleapis.com/v1beta/openai/"
-        configured_url = self.config.GEMINI_BASE_URL or self.config.OPENROUTER_BASE_URL or gemini_default_url
-        if "openrouter.ai" in configured_url:
-            self.base_url = gemini_default_url
-        else:
-            self.base_url = configured_url
+        self.api_key = self.config.GEMINI_API_KEY
+        self.base_url = self.config.GEMINI_BASE_URL
 
-        # Ensure model is gemini-embedding-001 by default
+        # OpenAI model names are not served by Gemini; fall back to the Gemini embedding model
         configured_model = self.config.embedding_model or "gemini-embedding-001"
         if "text-embedding" in configured_model or "openai" in configured_model:
             self.model = "gemini-embedding-001"

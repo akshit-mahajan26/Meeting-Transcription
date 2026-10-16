@@ -115,7 +115,6 @@ async def run_chat_graph(
     project_id: str | None = None,
     meeting_id: str | None = None,
     speaker: str | None = None,
-    top_k: int = 5,
     history: list[dict[str, str]] | None = None,
 ) -> dict[str, Any]:
     """

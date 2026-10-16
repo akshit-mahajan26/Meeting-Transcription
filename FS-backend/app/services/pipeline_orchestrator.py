@@ -262,7 +262,7 @@ class BackendPipelineOrchestrator:
                     meeting_id=meeting_id,
                     topic_index=seg_idx,
                     title=seg.get("title") or seg.get("topic_name") or f"Topic {seg_idx}",
-                    compiled_text=seg.get("compiled_text") or seg.get("summary") or "",
+                    compiled_text=seg.get("compiled_text") or seg.get("topic_summary") or seg.get("summary") or "",
                     start_time=float(seg.get("start_time") or 0.0),
                     end_time=float(seg.get("end_time") or 0.0),
                 )

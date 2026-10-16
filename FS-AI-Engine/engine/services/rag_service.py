@@ -35,7 +35,6 @@ class RAGQueryResponse(BaseModel):
     citations_count: int = 0
     provenance_verified: bool = True
     routing_mode: str = "MICRO"
-    routing_confidence: float = 1.0
     routing_reasoning: str = ""
     llm_model_used: str = getattr(settings, "LLM_MODEL_NAME", "gemini-2.5-flash")
 
@@ -46,7 +45,6 @@ async def process_user_query(
     project_id: str | None = None,
     meeting_id: str | None = None,
     speaker: str | None = None,
-    top_k: int = 5,
     history: list[dict[str, str]] | None = None,
 ) -> RAGQueryResponse:
     """Answer a question with the chat graph. Errors propagate to the caller (no hidden second pipeline)."""
@@ -61,7 +59,6 @@ async def process_user_query(
         project_id=project_id,
         meeting_id=meeting_id,
         speaker=speaker,
-        top_k=top_k,
         history=history,
     )
 
@@ -85,7 +82,6 @@ async def process_user_query(
         citations_count=len(citations),
         provenance_verified=graph_res.get("provenance_verified", True),
         routing_mode=graph_res.get("routing_mode", "LANGGRAPH_RAG"),
-        routing_confidence=1.0,
         routing_reasoning=graph_res.get("reasoning", "LangGraph StateGraph Execution"),
         llm_model_used=graph_res.get("llm_model_used", getattr(settings, "LLM_MODEL_NAME", "gemini-2.5-flash")),
     )

@@ -21,10 +21,10 @@ except ImportError:
 logger = logging.getLogger(__name__)
 
 
-class OpenRouterClient:
+class LLMClient:
     """
     Centralized Asynchronous LLM Client Utility.
-    Serves as the universal LLM provider interface supporting Google Gemini (via official OpenAI-compatible endpoint and google-genai SDK) and OpenRouter.
+    Serves as the universal LLM provider interface supporting Google Gemini (via official OpenAI-compatible endpoint and google-genai SDK).
     """
 
     def __init__(
@@ -32,22 +32,16 @@ class OpenRouterClient:
         api_key: str | None = None,
         base_url: str | None = None,
         default_model: str | None = None,
-        referer: str | None = None,
-        title: str | None = None,
-        site_url: str | None = None,
-        site_name: str | None = None
     ):
         self._client: AsyncOpenAI | None = None
         self._genai_client = None
-        self.reload_config(api_key, base_url, default_model, referer, title)
+        self.reload_config(api_key, base_url, default_model)
 
     def reload_config(
         self,
         api_key: str | None = None,
         base_url: str | None = None,
         default_model: str | None = None,
-        referer: str | None = None,
-        title: str | None = None,
     ):
         """Dynamically re-evaluates environment variables and .env configuration."""
         try:
@@ -66,7 +60,6 @@ class OpenRouterClient:
             or getattr(settings, "GEMINI_API_KEY", None)
             or os.getenv("GOOGLE_API_KEY")
         )
-        self.provider = "gemini"
         self.api_key = self.gemini_api_key
         self.base_url = (
             base_url
@@ -96,7 +89,7 @@ class OpenRouterClient:
                 )
                 logger.info(f"[LLMClient] Initialized Gemini client (Endpoint: {self.base_url}, Default Model: {self.default_model})")
             except Exception as e:
-                logger.warning(f"Could not initialize AsyncOpenAI with {self.provider}: {e}")
+                logger.warning(f"Could not initialize AsyncOpenAI with Gemini: {e}")
                 self._client = None
 
     @property
@@ -111,25 +104,21 @@ class OpenRouterClient:
         temperature: float = 0.2,
     ) -> str:
         """
-        Sends asynchronous chat completion to Google Gemini or OpenRouter.
+        Sends asynchronous chat completion to Google Gemini.
         Provides robust conversational fallback responses if offline or API key is not configured.
         """
         target_model = model or self.default_model
 
-        # Adjust model name for Gemini or OpenRouter prefix
-        if self.provider == "gemini":
-            if target_model.startswith("google/"):
-                target_model = target_model[len("google/"):]
-            elif target_model.startswith("gemini/"):
-                target_model = target_model[len("gemini/"):]
-        elif self.provider == "openrouter":
-            if not target_model.startswith("google/") and ("gemini" in target_model.lower()):
-                target_model = f"google/{target_model}"
+        # Strip provider prefixes the Gemini endpoint does not accept
+        if target_model.startswith("google/"):
+            target_model = target_model[len("google/"):]
+        elif target_model.startswith("gemini/"):
+            target_model = target_model[len("gemini/"):]
 
         # Ensure sufficient token budget for reasoning models like Gemini 2.5 Flash whose internal thinking tokens consume max_tokens
-        effective_max_tokens = max(max_tokens or 8192, 8192) if self.provider == "gemini" else max(max_tokens or 2048, 2048)
+        effective_max_tokens = max(max_tokens or 8192, 8192)
 
-        # 1. Try OpenAI-compatible endpoint (works natively for Google Gemini OpenAI endpoint and OpenRouter)
+        # 1. Try OpenAI-compatible endpoint (Google Gemini OpenAI endpoint)
         if self._client is not None:
             try:
                 logger.info(f"[LLMClient] Sending request to {target_model} via {self.base_url} (max_tokens={effective_max_tokens})")
@@ -143,10 +132,10 @@ class OpenRouterClient:
                     content = response.choices[0].message.content or ""
                     return content.strip()
             except Exception as e:
-                logger.warning(f"[LLMClient] {self.provider.upper()} API call failed: {e}. Trying secondary path.")
+                logger.warning(f"[LLMClient] Gemini API call failed: {e}. Trying secondary path.")
 
-        # 2. Try Google GenAI SDK if available and provider is Gemini
-        if self.provider == "gemini" and self._genai_client is not None:
+        # 2. Try Google GenAI SDK if available
+        if self._genai_client is not None:
             try:
                 logger.info(f"[LLMClient] Sending request to {target_model} via Google GenAI SDK")
                 # Format system message + user messages for Google GenAI
@@ -298,17 +287,17 @@ class OpenRouterClient:
 
 
 # Singleton client instance
-openrouter_client = OpenRouterClient()
+llm_client_instance = LLMClient()
 
 
-def get_openrouter_client() -> OpenRouterClient:
-    """Dependency injector for OpenRouterClient."""
-    global openrouter_client
-    if openrouter_client is None:
-        openrouter_client = OpenRouterClient()
+def get_llm_client() -> LLMClient:
+    """Dependency injector for LLMClient."""
+    global llm_client_instance
+    if llm_client_instance is None:
+        llm_client_instance = LLMClient()
     else:
-        # Check if provider or api key changed
+        # Re-initialize if a Gemini key became available after startup
         active_gemini_key = os.getenv("GEMINI_API_KEY") or getattr(settings, "GEMINI_API_KEY", None)
-        if active_gemini_key and (openrouter_client.provider != "gemini" or openrouter_client._client is None):
-            openrouter_client.reload_config()
-    return openrouter_client
+        if active_gemini_key and llm_client_instance._client is None:
+            llm_client_instance.reload_config()
+    return llm_client_instance

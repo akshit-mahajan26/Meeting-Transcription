@@ -32,7 +32,7 @@ class MeetingSummarizer:
 
     def __init__(self, settings: Settings | None = None):
         self.settings = settings or get_settings()
-        self.llm_api_key = self.settings.llm_api_key
+        self.llm_api_key = self.settings.GEMINI_API_KEY
         self.llm_model = self.settings.llm_model
 
     def generate_intelligence(
@@ -72,7 +72,7 @@ class MeetingSummarizer:
             )
 
         # 1. Attempt Structured LLM Extraction if credentials are configured
-        if self.llm_api_key and self.settings.llm_provider != "heuristic":
+        if self.llm_api_key:
             try:
                 llm_result = self._extract_via_llm(meeting_id, turns, segments, title)
                 if llm_result:
@@ -216,7 +216,9 @@ class MeetingSummarizer:
 
         # 30-second bounded timeout to protect synchronous SLA
         with httpx.Client(timeout=30.0) as client:
-            resp = client.post("https://api.openai.com/v1/chat/completions", headers=headers, json=payload)
+            resp = client.post(
+                f"{self.settings.GEMINI_BASE_URL.rstrip('/')}/chat/completions", headers=headers, json=payload
+            )
             if resp.status_code == 200:
                 raw_json = resp.json()["choices"][0]["message"]["content"]
                 return json.loads(raw_json)

@@ -18,7 +18,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from ..core.config import settings
-from ..services.llm_client import get_openrouter_client
+from ..services.llm_client import get_llm_client
 from .chat_query import (
     ChatState,
     QueryIntent,
@@ -134,7 +134,7 @@ async def rewrite_query(query: str, history: list[dict[str, str]]) -> tuple[str,
     """
     convo = "\n".join(f"{m['role']}: {m['content'][:400]}" for m in history[-4:])
     try:
-        reply = await get_openrouter_client().generate_chat_completion(
+        reply = await get_llm_client().generate_chat_completion(
             messages=[
                 {"role": "system", "content": REWRITE_PROMPT},
                 {
@@ -260,7 +260,7 @@ async def llm_synthesis_node(state: ChatState) -> dict[str, Any]:
         f"- Ground your statements strictly in the facts provided in the excerpts and records."
     )
 
-    llm_client = get_openrouter_client()
+    llm_client = get_llm_client()
     history = [
         {"role": m["role"], "content": m["content"]}
         for m in state.get("history") or []
