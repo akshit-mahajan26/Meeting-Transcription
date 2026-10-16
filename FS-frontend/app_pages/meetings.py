@@ -82,7 +82,16 @@ def _detail(meeting_id: str) -> None:
 
 def render() -> None:
     page_header("Meetings", "Browse ingested meetings and inspect their transcripts.")
-    meetings = load_meetings()
+    all_meetings = load_meetings()
+    meetings = [m for m in all_meetings if m.get("status") != "FAILED"]
+    failed = [m for m in all_meetings if m.get("status") == "FAILED"]
+    if failed:
+        with st.container(border=True):
+            st.error(f"{len(failed)} ingestion{'s' if len(failed) != 1 else ''} failed. Submit the link again on the Ingest page to retry.",
+                     icon=":material/error:")
+            for m in failed:
+                st.markdown(f"**{m.get('title') or m['id']}** · {m.get('project_id') or '—'}")
+                st.caption(m.get("summary") or "No error details were recorded.")
     if not meetings:
         st.info("No meetings found. Ingest a meeting link to get started.", icon=":material/inbox:")
         return

@@ -149,12 +149,12 @@ async def extract_filters_node(state: ChatState) -> dict[str, Any]:
             # 1. Fetch available meetings and projects from PostgreSQL
             if project_id:
                 m_res = await session.execute(
-                    text("SELECT id, title, project_id, date FROM meetings WHERE user_id = :u_id AND project_id = :p_id"),
+                    text("SELECT id, title, project_id, date FROM meetings WHERE user_id = :u_id AND project_id = :p_id AND status <> 'FAILED'"),
                     {"u_id": user_id, "p_id": project_id},
                 )
             else:
                 m_res = await session.execute(
-                    text("SELECT id, title, project_id, date FROM meetings WHERE user_id = :u_id"), {"u_id": user_id}
+                    text("SELECT id, title, project_id, date FROM meetings WHERE user_id = :u_id AND status <> 'FAILED'"), {"u_id": user_id}
                 )
             meetings_db = m_res.fetchall()
             meetings_dict = {m[0]: (m[1] or m[0]).strip() for m in meetings_db}
@@ -179,7 +179,7 @@ async def extract_filters_node(state: ChatState) -> dict[str, Any]:
                 try:
                     async with session.begin_nested():
                         m_p_res = await session.execute(
-                            text("SELECT DISTINCT project_id FROM meetings WHERE user_id = :u_id AND project_id IS NOT NULL"),
+                            text("SELECT DISTINCT project_id FROM meetings WHERE user_id = :u_id AND project_id IS NOT NULL AND status <> 'FAILED'"),
                             {"u_id": user_id},
                         )
                         available_projects = [

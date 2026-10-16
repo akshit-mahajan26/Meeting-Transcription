@@ -13,7 +13,8 @@ from ...services.fireflies_client import (
     FirefliesClient,
     get_fireflies_client,
 )
-from ...services.ownership import meeting_taken
+from ...services.ingestion_failures import record_failure
+from ...services.ownership import get_owned_meeting, meeting_taken
 from ...services.pipeline_orchestrator import (
     BackendPipelineOrchestrator,
     get_backend_pipeline_orchestrator,
@@ -36,6 +37,7 @@ class IngestLinkRequest(BaseModel):
 class IngestLinkResponse(BaseModel):
     """Immediate HTTP 202 Accepted response payload."""
     status: str = "queued"
+    already_ingested: bool = False
     job_type: str
     message: str
     meeting_identifier: str
@@ -119,6 +121,7 @@ async def _process_fireflies_dashboard_task(
         logger.info(f"[Background Task] Successfully ingested meeting '{transcript_id}': {result}")
     except Exception as exc:
         logger.error(f"[Background Task] Failed to process transcript '{transcript_id}': {exc}", exc_info=True)
+        record_failure(user_id, transcript_id, project_id, title, exc)
 
 
 async def _process_raw_media_task(
@@ -171,6 +174,7 @@ async def ingest_meeting_link(
     identifier = parsed_link["id"]
 
     # 2. Queue appropriate background worker
+    already_ingested = False
     if link_type == "FIREFLIES_DASHBOARD":
         _assert_ids_available(db, user.id, identifier)
         effective_title = payload.title or parsed_link.get("title")
@@ -183,10 +187,17 @@ async def ingest_meeting_link(
             fireflies_svc=fireflies_svc,
             orchestrator_svc=orchestrator_svc,
         )
+        existing = get_owned_meeting(db, user.id, identifier)
+        already_ingested = existing is not None and existing.status == "PROCESSED"
         msg = (
             f"Fireflies transcript '{identifier}' queued for background retrieval, "
             f"AI chunking, and database persistence."
         )
+        if already_ingested:
+            msg = (
+                f"Meeting '{identifier}' is already in your library. It will only be re-processed "
+                f"if its transcript has changed in Fireflies."
+            )
     else:  # RAW_MEDIA
         background_tasks.add_task(
             _process_raw_media_task,
@@ -203,6 +214,7 @@ async def ingest_meeting_link(
 
     return IngestLinkResponse(
         status="queued",
+        already_ingested=already_ingested,
         job_type=link_type,
         message=msg,
         meeting_identifier=identifier,

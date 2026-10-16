@@ -11,9 +11,13 @@ from ui.state import known_projects, load_meetings
 
 
 def render() -> None:
-    meetings = load_meetings()
+    all_meetings = load_meetings()
+    meetings = [m for m in all_meetings if m.get("status") != "FAILED"]
     projects = known_projects(meetings)
     page_header("Overview", "Your meeting knowledge base at a glance.")
+    if failed := len(all_meetings) - len(meetings):
+        st.warning(f"{failed} meeting ingestion{'s' if failed != 1 else ''} failed. See the **Meetings** page for details.",
+                   icon=":material/error:")
 
     # Quick ask
     with st.form("quick_ask", border=False):

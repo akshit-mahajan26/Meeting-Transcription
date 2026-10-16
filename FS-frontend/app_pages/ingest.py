@@ -59,14 +59,18 @@ def render() -> None:
                         register_project(project_id)
                         st.session_state.ingest_project = project_id
                         refresh_data()
-                        status.update(label="Accepted for background processing", state="complete")
+                        duplicate = bool(res.get("data", {}).get("already_ingested"))
+                        status.update(label="Already in your library" if duplicate else "Accepted for background processing", state="complete")
                         st.json(res.get("data", {}), expanded=False)
                     else:
                         status.update(label="Ingestion failed", state="error")
                         st.error(res.get("error"))
-                if res.get("success"):
+                if res.get("success") and duplicate:
+                    st.info("This meeting is already in your library. It is only re-processed if its transcript has changed in Fireflies.",
+                            icon=":material/info:")
+                elif res.get("success"):
                     st.toast(f"Queued for project {project_id}", icon=":material/check_circle:")
-                    st.caption("Processing is asynchronous. Check the **Meetings** page in a moment to see new meetings.")
+                    st.caption("Processing is asynchronous. Check the **Meetings** page in a moment to see new meetings; a failed ingestion is listed there with its error.")
 
     with help_col:
         with st.container(border=True):

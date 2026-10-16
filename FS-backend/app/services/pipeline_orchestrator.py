@@ -15,13 +15,10 @@ from ..core.database import (
     SessionLocal,
     SpeakerTurnModel,
 )
+from .ingestion_failures import PipelineOrchestratorError
 from .ownership import claim_project, get_owned_meeting
 
 logger = logging.getLogger(__name__)
-
-class PipelineOrchestratorError(Exception):
-    """Exception raised when background ingestion orchestration fails."""
-
 
 class BackendPipelineOrchestrator:
     """
@@ -238,9 +235,11 @@ class BackendPipelineOrchestrator:
                 db.add(meeting)
                 db.flush()
             else:
+                # A retry of a FAILED ingestion must not keep the failure reason as its summary
+                previous_summary = None if meeting.status == "FAILED" else meeting.summary
                 meeting.project_id = project_id or meeting.project_id
                 meeting.title = title or meeting.title
-                meeting.summary = summary_text or meeting.summary
+                meeting.summary = summary_text or previous_summary
                 meeting.content_hash = content_hash
                 meeting.date = date_str or meeting.date
                 meeting.duration = duration or meeting.duration

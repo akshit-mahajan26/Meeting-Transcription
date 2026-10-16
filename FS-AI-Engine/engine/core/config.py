@@ -67,7 +67,12 @@ class Settings(BaseSettings):
     )
 
     # Segmentation Parameters
-    topic_similarity_threshold: float = Field(default=0.55)
+    topic_similarity_threshold: float = Field(default=0.55)  # word-overlap fallback only
+    topic_embedding_zscore: float = Field(
+        default=1.0,
+        description="With embeddings, a gap is a topic-change candidate when its similarity is this many "
+                    "standard deviations below the meeting's own average gap similarity",
+    )
     min_turns_per_segment: int = Field(default=2)
     max_turns_per_segment: int = Field(default=10)
 
