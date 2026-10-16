@@ -1,3 +1,4 @@
+import asyncio
 
 from fastapi import APIRouter, Depends, status
 from pydantic import BaseModel
@@ -110,7 +111,7 @@ async def process_full_pipeline(
     # 2. Level 1 Signal Tagging
     tagged_turns = tagger.tag_turns(norm_result.turns)
 
-    # 3 & 4. Level 1 Embedding Generation, then Level 2 Topic Segmentation
+    # 3 & 4. Concurrent Level 1 Embedding Generation & Level 2 Topic Segmentation
     async def _embed_turns():
         if not tagged_turns:
             return
@@ -131,15 +132,17 @@ async def process_full_pipeline(
             import logging
             logging.getLogger(__name__).error(f"Failed to generate embeddings in process_full_pipeline: {exc}")
 
-    # Embeddings first: the segmenter uses them to detect topic changes (falls back to word overlap without them)
-    await _embed_turns()
-    segments = await segmenter.segment_transcript_async(
-        meeting_id=payload.meeting_id,
-        turns=tagged_turns,
+    _, segments = await asyncio.gather(
+        _embed_turns(),
+        segmenter.segment_transcript_async(
+            meeting_id=payload.meeting_id,
+            turns=tagged_turns,
+        ),
     )
 
-    # 5. Level 3 Meeting Intelligence Extraction
-    summary = summarizer.generate_intelligence(
+    # 5. Level 3 Meeting Intelligence Extraction (blocking HTTP call: run it in a thread so the event loop stays free)
+    summary = await asyncio.to_thread(
+        summarizer.generate_intelligence,
         meeting_id=payload.meeting_id,
         turns=tagged_turns,
         segments=segments,

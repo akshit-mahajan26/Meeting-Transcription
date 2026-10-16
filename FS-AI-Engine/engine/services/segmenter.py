@@ -38,7 +38,7 @@ class TopicSegmenter:
     """
     Level 2 Hybrid Boundary Topic Segmenter.
 
-    1. Scores topic similarity across turn windows from turn embeddings (word-overlap cosine when embeddings are missing).
+    1. Computes similarity guardrails (Theta_TOPIC) across turn windows using TF-IDF vectorization.
     2. Identifies candidate boundaries where topic similarity drops.
     3. Confirms boundary intent, suppressing splits on short counter-questions or momentary tangents.
     4. Enforces segment size bounds (min_turns_per_segment, max_turns_per_segment).
@@ -52,7 +52,6 @@ class TopicSegmenter:
         self.similarity_threshold = self.settings.topic_similarity_threshold
         self.min_turns = self.settings.min_turns_per_segment
         self.max_turns = self.settings.max_turns_per_segment
-        self.embedding_zscore = self.settings.topic_embedding_zscore
         self.llm_model = getattr(self.settings, "LLM_MODEL_NAME", None) or getattr(self.settings, "llm_model", "gemini-2.5-flash")
 
     @staticmethod
@@ -81,32 +80,6 @@ class TopicSegmenter:
             return 0.0
 
         return dot_product / (mag1 * mag2)
-
-    @staticmethod
-    def _cosine(a: list[float], b: list[float]) -> float:
-        dot = sum(x * y for x, y in zip(a, b, strict=True))
-        na = math.sqrt(sum(x * x for x in a))
-        nb = math.sqrt(sum(y * y for y in b))
-        return dot / (na * nb) if na and nb else 0.0
-
-    @classmethod
-    def _embedding_boundary_scores(cls, turns: list[SpeakerTurn]) -> list[float] | None:
-        """
-        Similarity at each gap between turns, from turn embeddings (mean of the 2 turns before vs the 2 after).
-        Returns None when any turn lacks an embedding or dimensions differ, so callers fall back to word overlap.
-        """
-        vectors = [t.embedding for t in turns]
-        if any(not v for v in vectors) or len({len(v) for v in vectors}) != 1:
-            return None
-
-        def window_mean(lo: int, hi: int) -> list[float]:
-            window = vectors[lo:hi]
-            return [sum(col) / len(window) for col in zip(*window, strict=True)]
-
-        return [
-            cls._cosine(window_mean(max(0, i - 1), i + 1), window_mean(i + 1, min(len(turns), i + 3)))
-            for i in range(len(turns) - 1)
-        ]
 
     def _is_short_tangent(self, turns: list[SpeakerTurn], candidate_idx: int) -> bool:
         """
@@ -162,27 +135,20 @@ class TopicSegmenter:
         if len(turns) <= min_turns:
             return [await self._build_segment_async(meeting_id, 1, turns, confidence=1.0)]
 
-        # Prefer embeddings (meaning); fall back to word overlap for meeting-relative statistics.
-        boundary_scores = self._embedding_boundary_scores(turns)
-        use_embeddings = boundary_scores is not None and len(boundary_scores) >= 8
-        if use_embeddings:
-            mean = sum(boundary_scores) / len(boundary_scores)
-            std = math.sqrt(sum((s - mean) ** 2 for s in boundary_scores) / len(boundary_scores))
-            # Embedding similarities of one meeting sit in a narrow band, so cut relative to that band
-            threshold = mean - self.embedding_zscore * std
-        else:
-            turn_tokens = [self._tokenize(t.text) for t in turns]
-            boundary_scores = []
-            for i in range(len(turns) - 1):
-                left_window_tokens = []
-                for j in range(max(0, i - 1), i + 1):
-                    left_window_tokens.extend(turn_tokens[j])
+        turn_tokens = [self._tokenize(t.text) for t in turns]
 
-                right_window_tokens = []
-                for j in range(i + 1, min(len(turns), i + 3)):
-                    right_window_tokens.extend(turn_tokens[j])
+        boundary_scores: list[float] = []
+        for i in range(len(turns) - 1):
+            left_window_tokens = []
+            for j in range(max(0, i - 1), i + 1):
+                left_window_tokens.extend(turn_tokens[j])
 
-                boundary_scores.append(self._compute_cosine_similarity(left_window_tokens, right_window_tokens))
+            right_window_tokens = []
+            for j in range(i + 1, min(len(turns), i + 3)):
+                right_window_tokens.extend(turn_tokens[j])
+
+            sim = self._compute_cosine_similarity(left_window_tokens, right_window_tokens)
+            boundary_scores.append(sim)
 
         cut_indices: list[int] = []
         last_cut = 0
@@ -191,11 +157,6 @@ class TopicSegmenter:
             turns_in_current = (i + 1) - last_cut
             similarity = boundary_scores[i]
             is_candidate_shift = similarity < threshold
-            if use_embeddings:
-                # One topic switch dips the sliding-window score over several adjacent gaps: cut only at the lowest
-                left_ok = i == 0 or similarity <= boundary_scores[i - 1]
-                right_ok = i == len(boundary_scores) - 1 or similarity < boundary_scores[i + 1]
-                is_candidate_shift = is_candidate_shift and left_ok and right_ok
 
             if turns_in_current < min_turns:
                 continue
@@ -220,11 +181,7 @@ class TopicSegmenter:
         for cut_idx in cut_indices:
             seg_turns = turns[start_idx:cut_idx]
             if seg_turns:
-                cut_sim = boundary_scores[cut_idx - 1] if cut_idx - 1 < len(boundary_scores) else None
-                if use_embeddings and cut_sim is not None and std > 0:
-                    conf = round(min(1.0, max(0.1, (mean - cut_sim) / std / 3)), 2)  # depth below average, in std units
-                else:
-                    conf = round(1.0 - (cut_sim if cut_sim is not None else 0.5), 2)
+                conf = round(1.0 - (boundary_scores[cut_idx - 1] if cut_idx - 1 < len(boundary_scores) else 0.5), 2)
                 segment_defs.append((seg_counter, seg_turns, conf))
                 seg_counter += 1
             start_idx = cut_idx
