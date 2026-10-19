@@ -80,7 +80,7 @@ flowchart TD
     G --> H([Answer + citations])
 ```
 
-At ingestion, an unsupported link returns 400, a meeting ID owned by another account returns 409, the engine call is retried 3 times with backoff, and the database write is one transaction so a failure leaves no half-loaded meeting.
+At ingestion, an unsupported link returns 400, a meeting ID owned by another account returns 409, the engine call is retried 3 times with backoff, and the database write is one transaction so a failure leaves no half-loaded meeting. If background ingestion still fails, the meeting is saved with status `FAILED` and a user-safe reason (for example Fireflies rejected the key, transcript not found, rate limit), and the Meetings page lists it as failed instead of the failure being silent.
 
 ### 3.4 What Has Been Achieved
 
@@ -143,11 +143,11 @@ flowchart TD
 | Tag signals | Regex flags for question, commitment, blocker |
 | Embed *(parallel)* | 1536-d Gemini embeddings of `[time] Speaker: text`, in batches of 50 |
 | Segment *(parallel)* | Group turns into topics by word-overlap similarity between neighbouring windows (2 to 10 turns per topic); an LLM writes a 5 to 6 word heading |
-| Summarize | Overview, decisions, commitments, blockers, each tied to its source turn; invented turn IDs are discarded |
+| Summarize | Overview, decisions, commitments, blockers, each tied to its source turn. Items are extracted by rules from the turns, so no turn ID can be invented; the LLM only writes the short overview, and only when Fireflies supplied no summary |
 
 4. **Persist atomically:** one transaction claims the project, upserts the meeting, inserts topics, and bulk-inserts turns (each attached to a topic by time window). Any failure rolls everything back.
 
-If an LLM is unavailable, topic headings and summaries fall back to heuristics. If embeddings fail, placeholder vectors are used, which are not semantically meaningful, so retrieval quality drops.
+If an LLM is unavailable, topic headings and the overview fall back to heuristics or a template. If embeddings fail, placeholder vectors are used, which are not semantically meaningful, so retrieval quality drops.
 
 ### 4.3 Pipeline 2: Query Processing
 
@@ -398,7 +398,7 @@ Every content answer carries citation cards (speaker, time, snippet) for the exc
 | Topics and summary tiers | **Partial** | Built but not used by retrieval; decisions, commitments, blockers are computed then dropped; only the overview text is saved |
 | Retrieval quality | **Partial** | Hand-tuned scoring, no reranker, no SQL top-k; full-text index unused |
 | Evaluation | **Partial** | Harness runs; no correctness metrics yet |
-| Raw audio, webhooks, job status | **Not started** | Audio only forwarded to Fireflies; background failures only logged |
+| Raw audio, webhooks, job status | **Partial** | Audio only forwarded to Fireflies; no webhooks or job-status endpoint. Failed ingestions are now recorded as `FAILED` meetings with a reason, but there is no retry queue |
 | Deployment and tests | **Not started / Partial** | No docker-compose; no backend or frontend tests |
 
 ### 6.3 Next Steps, in Priority Order
@@ -413,4 +413,4 @@ Every content answer carries citation cards (speaker, time, snippet) for the exc
 
 ---
 
-*Document version: 1.1 | Date: 2026-10-16*
+*Document version: 1.2 | Date: 2026-10-19*
