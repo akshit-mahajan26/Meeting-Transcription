@@ -149,6 +149,8 @@ class RewriteResult(tuple):
     speaker: str | None
     time_scope: str | None
     intent: str | None
+    meeting_id: str | None
+    cross_meeting: bool
 
     def __new__(
         cls,
@@ -159,6 +161,8 @@ class RewriteResult(tuple):
         speaker: str | None = None,
         time_scope: str | None = None,
         intent: str | None = None,
+        meeting_id: str | None = None,
+        cross_meeting: bool = False,
     ):
         return super().__new__(cls, (query, date_from, date_to, follow_up))
 
@@ -171,6 +175,8 @@ class RewriteResult(tuple):
         speaker: str | None = None,
         time_scope: str | None = None,
         intent: str | None = None,
+        meeting_id: str | None = None,
+        cross_meeting: bool = False,
     ):
         self.query = query
         self.date_from = date_from
@@ -179,6 +185,8 @@ class RewriteResult(tuple):
         self.speaker = speaker
         self.time_scope = time_scope
         self.intent = intent
+        self.meeting_id = meeting_id
+        self.cross_meeting = cross_meeting
 
 
 # ============================================================================

@@ -95,6 +95,7 @@ async def extract_filters_node(state: ChatState) -> dict[str, Any]:
     reasoning = "Universal semantic vector search across meeting transcripts"
     project_tokens: set[str] = set()
     time_scope: str | None = state.get("time_scope")
+    cross_meeting = False
     raw_query = state.get("query", "").strip()
 
     if AsyncSessionLocal is not None:
@@ -158,12 +159,19 @@ async def extract_filters_node(state: ChatState) -> dict[str, Any]:
             )
             available_speakers = [r[0] for r in spk_res.fetchall() if r[0]]
 
-            # 2. Structured query rewrite with known participant context
-            rewrite_res = await rewrite_query(raw_query, state.get("history") or [], available_speakers=available_speakers)
-            query, date_from, date_to, follow_up = rewrite_res[:4]
+            # 2. Structured query rewrite with known participant context and available meetings
+            rewrite_res = await rewrite_query(
+                raw_query,
+                state.get("history") or [],
+                available_speakers=available_speakers,
+                available_meetings=available_meetings,
+            )
+            query, date_from, date_to, _follow_up = rewrite_res[:4]
             structured_speaker = getattr(rewrite_res, "speaker", None)
             structured_time_scope = getattr(rewrite_res, "time_scope", None)
             structured_intent = getattr(rewrite_res, "intent", None)
+            structured_meeting_id = getattr(rewrite_res, "meeting_id", None)
+            cross_meeting = getattr(rewrite_res, "cross_meeting", False)
             if structured_time_scope:
                 time_scope = structured_time_scope
 
@@ -205,6 +213,10 @@ async def extract_filters_node(state: ChatState) -> dict[str, Any]:
             if resolved_meeting_id:
                 m_title = meetings_dict.get(resolved_meeting_id, resolved_meeting_id)
                 reasoning = f"Scoped to meeting '{m_title}' ({resolved_meeting_id})"
+            elif structured_meeting_id and structured_meeting_id in meetings_dict:
+                resolved_meeting_id = structured_meeting_id
+                m_title = meetings_dict[resolved_meeting_id]
+                reasoning = f"Scoped to meeting '{m_title}' ({resolved_meeting_id})"
             else:
                 on_date, date_label = meetings_in_date_range(available_meetings, date_from, date_to)
                 if len(on_date) == 1:
@@ -230,12 +242,18 @@ async def extract_filters_node(state: ChatState) -> dict[str, Any]:
                         spoke_in = {r[0] for r in rs_res.fetchall()}
                         if spoke_in:
                             rel_pool = [m for m in available_meetings if m["id"] in spoke_in]
-                    m_id, m_title, meeting_reasoning = resolve_meeting_from_query(
-                        query, m_db_pairs, matched_spk_phrase, available_meetings=rel_pool
-                    )
-                    if not m_id and time_scope == "latest" and rel_pool:
+                    if cross_meeting:
+                        m_id, m_title, meeting_reasoning = None, None, "Cross-meeting query: searching across all meetings"
+                    else:
+                        m_id, m_title, meeting_reasoning = resolve_meeting_from_query(
+                            query, m_db_pairs, matched_spk_phrase
+                        )
+                    if not m_id and not cross_meeting and time_scope == "latest" and rel_pool:
                         newest = max(rel_pool, key=lambda m: str(m.get("date") or ""))
                         m_id, meeting_reasoning = newest["id"], f"Most recent meeting: '{newest['title']}' ({newest['id']})"
+                    elif not m_id and not cross_meeting and time_scope == "earliest" and rel_pool:
+                        earliest = min(rel_pool, key=lambda m: str(m.get("date") or ""))
+                        m_id, meeting_reasoning = earliest["id"], f"Earliest meeting: '{earliest['title']}' ({earliest['id']})"
                     if m_id:
                         resolved_meeting_id = m_id
                         reasoning = meeting_reasoning
@@ -280,14 +298,16 @@ async def extract_filters_node(state: ChatState) -> dict[str, Any]:
                         {"id": r[0], "title": (r[1] or r[0]).strip(), "date": format_meeting_date(r[2]), "turns": r[3]}
                         for r in m_candidates
                     ]
-                    is_latest = (time_scope == "latest") or bool(
-                        re.search(r"\b(?:last|latest|most recent|recent|previous)\b", query.lower())
-                    )
-                    if is_latest:
+                    if time_scope == "latest":
                         latest_m = relevant_meetings[0]
                         resolved_meeting_id = latest_m["id"]
                         relevant_meetings = [latest_m]
                         reasoning = f"Most recent meeting for participant(s) {', '.join(resolved_speakers)}: '{latest_m['title']}' ({latest_m['id']}) on {latest_m.get('date', 'not recorded')}"
+                    elif time_scope == "earliest":
+                        earliest_m = relevant_meetings[-1]
+                        resolved_meeting_id = earliest_m["id"]
+                        relevant_meetings = [earliest_m]
+                        reasoning = f"Earliest meeting for participant(s) {', '.join(resolved_speakers)}: '{earliest_m['title']}' ({earliest_m['id']}) on {earliest_m.get('date', 'not recorded')}"
                     else:
                         m_titles_summary = ", ".join(f"'{m['title']}'" for m in relevant_meetings)
                         reasoning = f"Found {len(relevant_meetings)} meeting(s) for participant(s) {', '.join(resolved_speakers)}: {m_titles_summary}"
@@ -311,16 +331,25 @@ async def extract_filters_node(state: ChatState) -> dict[str, Any]:
 
     else:
         # Fallback when running without a database session
-        rewrite_res = await rewrite_query(raw_query, state.get("history") or [])
-        query, date_from, date_to, follow_up = rewrite_res[:4]
+        rewrite_res = await rewrite_query(
+            raw_query,
+            state.get("history") or [],
+            available_meetings=state.get("available_meetings") or [],
+            available_speakers=state.get("available_speakers") or [],
+        )
+        query, date_from, date_to, _follow_up = rewrite_res[:4]
         structured_speaker = getattr(rewrite_res, "speaker", None)
         structured_time_scope = getattr(rewrite_res, "time_scope", None)
         structured_intent = getattr(rewrite_res, "intent", None)
+        structured_meeting_id = getattr(rewrite_res, "meeting_id", None)
         if structured_time_scope:
             time_scope = structured_time_scope
         if structured_speaker and not resolved_speakers:
             resolved_speakers = [structured_speaker]
             resolved_speaker = structured_speaker
+        if structured_meeting_id and not resolved_meeting_id and structured_meeting_id in {m.get("id") for m in state.get("available_meetings") or []}:
+            resolved_meeting_id = structured_meeting_id
+            reasoning = f"Scoped to meeting '{resolved_meeting_id}'"
         query_intent = structured_intent or classify_query_intent(query, resolved_speakers)
 
     logger.info(
@@ -344,13 +373,13 @@ async def extract_filters_node(state: ChatState) -> dict[str, Any]:
 
     return {
         "query_intent": query_intent,
-        "time_scope": time_scope or ("latest" if re.search(r"\b(?:last|latest|most recent|recent|previous)\b", query.lower()) else None),
+        "time_scope": time_scope,
         "skip_retrieval": skip_retrieval,
         "extracted_speaker": resolved_speaker,
         "extracted_speakers": resolved_speakers,
         "query": query,  # corrected, standalone question used by every later step
-        # Earlier turns reach the answering LLM only when this question actually builds on them
-        "history": (state.get("history") or []) if follow_up else [],
+        # Preserve conversation history so synthesis LLM has context for references and follow-ups
+        "history": state.get("history") or [],
         "meeting_id": resolved_meeting_id,
         "meeting_scope_inferred": not user_picked_meeting and bool(resolved_meeting_id or date_meeting_ids),
         "date_meeting_ids": date_meeting_ids,

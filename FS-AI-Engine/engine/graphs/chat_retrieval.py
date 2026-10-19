@@ -112,6 +112,13 @@ async def vector_retrieval_node(state: ChatState) -> dict[str, Any]:
 
     if AsyncSessionLocal is not None:
         async with AsyncSessionLocal() as session:
+            vec_sim_sql = (
+                "CASE WHEN t.embedding IS NOT NULL "
+                "     THEN (1 - (t.embedding <=> CAST(:q_vec AS vector))) "
+                "     ELSE 0.0 END as vector_sim "
+                if has_vector
+                else "0.0 as vector_sim "
+            )
             query_parts = [
                 "SELECT t.turn_id, t.meeting_id, ",
                 "COALESCE(t.metadata->>'speaker', t.speaker_name, 'Unknown') as speaker_name, ",
@@ -119,19 +126,17 @@ async def vector_retrieval_node(state: ChatState) -> dict[str, Any]:
                 "COALESCE(t.metadata->>'timestamp', to_char(to_timestamp(t.start_time), 'HH24:MI:SS')) as timestamp_str, ",
                 "t.metadata, ",
                 "m.title as meeting_title, top.title as topic_title, ",
-                "CASE WHEN t.embedding IS NOT NULL AND :has_vector = true ",
-                "     THEN (1 - (t.embedding <=> CAST(:q_vec AS vector))) ",
-                "     ELSE 0.0 END as vector_sim ",
+                vec_sim_sql,
                 "FROM speaker_turns t ",
                 "LEFT JOIN meetings m ON t.meeting_id = m.id ",
                 "LEFT JOIN meeting_topics top ON t.topic_id = top.id ",
                 "WHERE t.user_id = :u_id"
             ]
             params: dict[str, Any] = {
-                "has_vector": has_vector,
-                "q_vec": vec_str,
                 "u_id": user_id,
             }
+            if has_vector:
+                params["q_vec"] = vec_str
 
             # Scope Filtering (kept apart so an inferred scope can be dropped again if it turns out to be wrong)
             scope_sql: list[str] = []

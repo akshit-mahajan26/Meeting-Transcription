@@ -90,6 +90,9 @@ scripts/
 GSD-STYLE.md
 model_capabilities.yaml
 PROJECT_RULES.md
+.gravitas/
+Gravitas
+Gravitas/
 
 # Transcripts JSON dumps
 transcripts/

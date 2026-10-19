@@ -188,26 +188,25 @@ async def llm_synthesis_node(state: ChatState) -> dict[str, Any]:
             "took place; if a meeting shows 'not recorded', say its date is not recorded."
         )
         list_instructions.append(
-            "- If the user asks about the 'last meeting' or 'latest discussion', ground your answer in the "
-            "chronologically newest meeting from the verified Meeting Details records above."
+            "- If the user asks about a relative or ordinal meeting (e.g. 'last meeting', 'first meeting', 'second discussion'), "
+            "ground your answer in the chronologically ordered verified Meeting Details records above."
         )
 
     # 4. Participant Involvement
     if relevant_meetings and resolved_speakers:
         spk_label = ", ".join(resolved_speakers)
-        is_latest_query = (state.get("time_scope") == "latest") or bool(
-            re.search(r"\b(?:last|latest|most recent|recent|previous)\b", query_lower)
-        )
-        if is_latest_query and len(relevant_meetings) == 1:
+        time_scope = state.get("time_scope")
+        if time_scope in ("latest", "earliest") and len(relevant_meetings) == 1:
             m = relevant_meetings[0]
             m_date = m.get("date") or m_date_map.get(m["id"]) or "not recorded"
+            temporal_desc = "Most Recent" if time_scope == "latest" else "Earliest"
             extra_record_context += (
-                f"Database Records - Most Recent Verified Meeting with Participant {spk_label}:\n"
+                f"Database Records - {temporal_desc} Verified Meeting with Participant {spk_label}:\n"
                 f"- **{m['title']}** (Held on: {m_date}, {m.get('turns', 0)} turns spoken)\n\n---\n"
             )
             list_instructions.append(
-                f"- The user is asking for the most recent meeting {spk_label} attended / was part of. "
-                f"State directly and clearly that the most recent meeting {spk_label} attended was **{m['title']}** on {m_date}. "
+                f"- The user is asking for the {temporal_desc.lower()} meeting {spk_label} attended / was part of. "
+                f"State directly and clearly that the {temporal_desc.lower()} meeting {spk_label} attended was **{m['title']}** on {m_date}. "
                 f"Do NOT mention any subsequent meeting where {spk_label} was absent or only mentioned."
             )
         else:

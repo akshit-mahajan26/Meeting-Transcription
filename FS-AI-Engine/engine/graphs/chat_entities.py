@@ -146,20 +146,13 @@ def resolve_meeting_from_query(
     query: str,
     meetings_db: list[tuple[str, str]],
     matched_speaker_phrase: str | None = None,
-    available_meetings: list[dict[str, Any]] | None = None,
+    available_meetings: list[dict[str, Any]] | None = None,  # unused; kept for API compatibility
 ) -> tuple[str | None, str | None, str]:
     """
-    Identifies if a specific meeting title or ID, or a relative reference such as "the last meeting",
-    is mentioned in the query. A date ("June 12", "yesterday") is resolved by the caller, which can
-    return several meetings.
+    Identifies if a specific meeting title or ID is mentioned in the query.
     Returns (resolved_meeting_id, resolved_meeting_title, reasoning_log).
     """
     q_lower = query.lower()
-
-    # If the user explicitly asks a cross-meeting, comparative, or inventory query, DO NOT lock to a single meeting
-    cross_meeting_pattern = r"\b(?:across (?:all |the |our )?meetings|in all meetings|all (?:the )?meetings|which meetings|what meetings|list (?:all )?meetings|in any meeting|any meetings|meetings that|meetings where|every meeting)\b"
-    if re.search(cross_meeting_pattern, q_lower):
-        return None, None, "Cross-meeting query: searching across all meetings"
 
     # If a speaker phrase matched, mask it out when detecting meeting title
     q_for_meeting = q_lower
@@ -174,25 +167,7 @@ def resolve_meeting_from_query(
             m_title_clean = (m_title or m_id).strip()
             return m_id, m_title_clean, f"Scoped to meeting '{m_title_clean}' ({m_id})"
 
-    # 2. Relative query resolution ("last meeting", "latest call", "previous sync"); dates are handled by the caller
-    rel_pat = (
-        r"\b(?:last|latest|most recent|recent|previous)\s+"
-        r"(?:meeting|call|discussion|sync|session|standup|one)\b"
-    )
-    if available_meetings and re.search(rel_pat, q_for_meeting):
-        dated = [m for m in available_meetings if m.get("date") and m["date"] != "not recorded"]
-        pool = dated if dated else available_meetings
-        if pool:
-            sorted_pool = sorted(pool, key=lambda x: str(x.get("date") or ""), reverse=True)
-            newest = sorted_pool[0]
-            m_id = newest.get("id")
-            m_title = (newest.get("title") or m_id or "").strip()
-            return (
-                m_id,
-                m_title,
-                f"Auto-scoped to most recent meeting '{m_title}' ({m_id}) based on relative temporal query",
-            )
-
+    # 2. Database Meeting Title Match (Token overlap and whole title match)
     best_score = 0
     best_m_id = None
     best_m_title = None
