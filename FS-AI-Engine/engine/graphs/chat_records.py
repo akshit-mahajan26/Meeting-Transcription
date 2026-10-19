@@ -8,7 +8,7 @@ Verified database records the synthesis prompt is grounded in:
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from typing import Any
 
 _MAX_CATALOG_MEETING_ROWS = 200
@@ -148,3 +148,55 @@ def build_catalog_records(
         )
 
     return context, instructions
+
+
+def _unscope_proj(pid: str | None) -> str | None:
+    if pid and ":" in pid and len(pid.split(":", 1)[0]) == 36:
+        return pid.split(":", 1)[1]
+    return pid
+
+
+# Date resolution: which meetings does the question's date range refer to? (the range comes from rewrite_query)
+
+def _meeting_day(meeting: dict[str, Any]) -> date | None:
+    """Calendar day of a meeting from its stored 'YYYY-MM-DD HH:MM UTC' date, or None if unreadable."""
+    try:
+        return date.fromisoformat(str(meeting.get("date") or "")[:10])
+    except ValueError:
+        return None
+
+
+def _resolve_day(value: str | None, held: list[date]) -> date | None:
+    """'YYYY-MM-DD' as given; 'MM-DD' (no year stated) takes the newest year with a meeting on that day."""
+    value = (value or "").strip()
+    try:
+        return date.fromisoformat(value)
+    except ValueError:
+        pass
+    try:
+        month, day = (int(part) for part in value.split("-"))
+        return date(max((d.year for d in held if (d.month, d.day) == (month, day)), default=datetime.now(UTC).year), month, day)
+    except ValueError:
+        return None
+
+
+def meetings_in_date_range(
+    meetings: list[dict[str, Any]], date_from: str | None, date_to: str | None
+) -> tuple[list[dict[str, Any]], str | None]:
+    """
+    Meetings held from `date_from` to `date_to` (inclusive, either end may be open), oldest first, plus a label.
+    The label is None when no usable date was given; with a label and an empty list, no meeting falls in the range.
+    """
+    held = [(m, day) for m in meetings if (day := _meeting_day(m))]
+    start = _resolve_day(date_from, [day for _, day in held])
+    end = _resolve_day(date_to, [day for _, day in held])
+    if not start and not end:
+        return [], None
+    if start and end and start > end:
+        start, end = end, start
+    matched = [m for m, day in held if (not start or day >= start) and (not end or day <= end)]
+    if start and end:
+        label = start.isoformat() if start == end else f"{start.isoformat()} to {end.isoformat()}"
+    else:
+        label = f"{start.isoformat()} onwards" if start else f"{end.isoformat()} and earlier"
+    return sorted(matched, key=lambda m: str(m.get("date") or "")), label

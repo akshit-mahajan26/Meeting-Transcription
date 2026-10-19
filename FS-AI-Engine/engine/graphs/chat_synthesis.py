@@ -9,7 +9,6 @@ Answer-generation nodes of the chat pipeline:
 
 from __future__ import annotations
 
-import json
 import logging
 import os
 import re
@@ -23,9 +22,11 @@ from .chat_query import (
     ChatState,
     QueryIntent,
     _state_speakers,
+    is_name_token_match,
     normalize_entity_typos,
 )
 from .chat_records import build_catalog_records, build_meeting_details
+from .chat_rewrite import _looks_like_follow_up, rewrite_query  # noqa: F401  (re-exported)
 
 # Dedicated AI Service Logger
 logger = logging.getLogger("fs-ai-engine.chat_graph")
@@ -114,51 +115,6 @@ def split_sources_line(answer: str, n_chunks: int) -> tuple[str, list[int] | Non
     return clean, reported
 
 
-REWRITE_PROMPT = """Rewrite the user's message to a meeting-transcript assistant as one clean, standalone question.
-- Fix typos and wrong words using the meaning of the whole sentence (e.g. "rate of the meeting" -> "date of the meeting").
-- If it depends on the earlier conversation (it, they, those, "and the other one?"), make it understandable on its own.
-- Keep every name, number and date the user wrote. Never answer the question or add requirements. A greeting stays a greeting.
-- If it is already clear, return it unchanged.
-- "date_from" and "date_to" are the inclusive range of days on which the MEETINGS were held that the question refers \
-to, as YYYY-MM-DD, or null. They apply only to when a meeting took place, not to events mentioned inside a discussion \
-("the outage yesterday"). Work out relative words ("today", "yesterday", "last week") from today's date. One day: both \
-equal. "after X" starts the day after X, "before X" ends the day before X, "since X" starts at X, "between X and Y" is \
-X to Y. If the user gave no year, write MM-DD instead (e.g. "06-12"). Both null when no meeting date or period is named.
-Reply with only JSON: {"query": "<question>", "date_from": "<date or null>", "date_to": "<date or null>"}"""
-
-
-async def rewrite_query(query: str, history: list[dict[str, str]]) -> tuple[str, str | None, str | None]:
-    """
-    One small LLM call that fixes typos, resolves follow-ups and reads the meeting date range the question refers to.
-    Returns (question, date_from, date_to). Any failure returns the original query with no date range.
-    """
-    convo = "\n".join(f"{m['role']}: {m['content'][:400]}" for m in history[-4:])
-    try:
-        reply = await get_llm_client().generate_chat_completion(
-            messages=[
-                {"role": "system", "content": REWRITE_PROMPT},
-                {
-                    "role": "user",
-                    "content": f"Today's date: {datetime.now(UTC):%Y-%m-%d}\n"
-                    f"Conversation so far:\n{convo or '(none)'}\n\nUser message: {query}",
-                },
-            ],
-            model=settings.LLM_MODEL_NAME,
-            max_tokens=200,
-            temperature=0.0,
-        )
-        parsed = json.loads(re.search(r"\{.*\}", reply, re.DOTALL).group(0))
-        rewritten = str(parsed.get("query") or "").strip()
-        date_from, date_to = (str(parsed[k]) if parsed.get(k) else None for k in ("date_from", "date_to"))
-    except Exception as exc:  # network error, no JSON in the reply, ...
-        logger.warning(f"[LANGGRAPH: REWRITE_QUERY] Keeping the original query: {exc}")
-        return query, None, None
-    if not rewritten or len(rewritten) > 4 * len(query) + 200:
-        rewritten = query
-    logger.info(f"[LANGGRAPH: REWRITE_QUERY] '{query}' -> '{rewritten}' (dates: {date_from} to {date_to})")
-    return rewritten, date_from, date_to
-
-
 # ============================================================================
 # Node 4: LLM Synthesis Node
 # ============================================================================
@@ -187,9 +143,23 @@ async def llm_synthesis_node(state: ChatState) -> dict[str, Any]:
         m_title_str = c.get("meeting_title") or c.get("meeting_id") or "Meeting"
         m_id = c.get("meeting_id") or ""
         m_date_str = c.get("meeting_date") or m_date_map.get(m_id) or c.get("date") or "not recorded"
+
+        spk_tag = f"Speaker: {c['speaker']} ({c['timestamp']})"
+        if resolved_speakers:
+            c_spk_lower = (c.get("speaker") or "").lower()
+            is_speaker = any(
+                s.lower() == c_spk_lower
+                or is_name_token_match(s.split()[0], c_spk_lower)
+                or s.lower() in c_spk_lower
+                for s in resolved_speakers
+            )
+            if is_speaker:
+                spk_tag += f" [PARTICIPANT SPOKE: {c['speaker']} spoke this turn]"
+            else:
+                spk_tag += f" [PARTICIPANT MENTION ONLY: Spoken by {c['speaker']}, NOT by {', '.join(resolved_speakers)}]"
+
         context_blocks.append(
-            f"[{i+1}] Meeting: {m_title_str} | Held on: {m_date_str} | Topic: {c.get('topic_context')} | "
-            f"Speaker: {c['speaker']} ({c['timestamp']})\n"
+            f"[{i+1}] Meeting: {m_title_str} | Held on: {m_date_str} | Topic: {c.get('topic_context')} | {spk_tag}\n"
             f"Quote: \"{c['text']}\""
         )
     formatted_context = "\n---\n".join(context_blocks)
@@ -225,16 +195,48 @@ async def llm_synthesis_node(state: ChatState) -> dict[str, Any]:
     # 4. Participant Involvement
     if relevant_meetings and resolved_speakers:
         spk_label = ", ".join(resolved_speakers)
-        mtg_bullets = "\n".join(
-            f"- **{m['title']}** (Held on: {m_date_map.get(m['id']) or 'not recorded'}, {m.get('turns', 0)} turns)"
-            for m in relevant_meetings
+        is_latest_query = (state.get("time_scope") == "latest") or bool(
+            re.search(r"\b(?:last|latest|most recent|recent|previous)\b", query_lower)
         )
+        if is_latest_query and len(relevant_meetings) == 1:
+            m = relevant_meetings[0]
+            m_date = m.get("date") or m_date_map.get(m["id"]) or "not recorded"
+            extra_record_context += (
+                f"Database Records - Most Recent Verified Meeting with Participant {spk_label}:\n"
+                f"- **{m['title']}** (Held on: {m_date}, {m.get('turns', 0)} turns spoken)\n\n---\n"
+            )
+            list_instructions.append(
+                f"- The user is asking for the most recent meeting {spk_label} attended / was part of. "
+                f"State directly and clearly that the most recent meeting {spk_label} attended was **{m['title']}** on {m_date}. "
+                f"Do NOT mention any subsequent meeting where {spk_label} was absent or only mentioned."
+            )
+        else:
+            mtg_bullets = "\n".join(
+                f"- **{m['title']}** (Held on: {m.get('date') or m_date_map.get(m['id']) or 'not recorded'}, {m.get('turns', 0)} turns spoken)"
+                for m in relevant_meetings
+            )
+            extra_record_context += (
+                f"Database Records - Verified Meetings with Participant(s) {spk_label} ({len(relevant_meetings)} total):\n"
+                f"{mtg_bullets}\n\n---\n"
+            )
+            list_instructions.append(
+                f"- The user is asking about meetings involving {spk_label}. List all {len(relevant_meetings)} verified meetings from the Database Records above, one short line each (title and date)."
+            )
+    elif resolved_speakers and state.get("query_intent") == QueryIntent.PARTICIPANT_INVOLVEMENT:
+        spk_label = ", ".join(resolved_speakers)
         extra_record_context += (
-            f"Database Records - Verified Meetings with Participant(s) {spk_label} ({len(relevant_meetings)} total):\n"
-            f"{mtg_bullets}\n\n---\n"
+            f"Database Records - Verified Meetings with Participant(s) {spk_label} (0 total):\n"
+            f"- No recorded meetings found where {spk_label} attended or spoke.\n\n---\n"
         )
         list_instructions.append(
-            f"- The user is asking about meetings involving {spk_label}. List all {len(relevant_meetings)} verified meetings from the Database Records above, one short line each (title and date)."
+            f"- State directly and clearly that {spk_label} has not attended or spoken in any recorded meetings."
+        )
+
+    if resolved_speakers and retrieved_chunks:
+        list_instructions.append(
+            f"- Attendance & Speaker Attribution: Distinguish strictly between when {', '.join(resolved_speakers)} SPOKE vs when they were ONLY MENTIONED by others. "
+            f"Quotes marked '[PARTICIPANT MENTION ONLY]' show other attendees speaking (e.g. discussing their absence or work); "
+            f"never treat a mention or note of absence as evidence that {', '.join(resolved_speakers)} joined or was part of that meeting."
         )
 
     if is_catalog and not extra_record_context and not relevant_meetings:

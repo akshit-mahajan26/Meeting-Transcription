@@ -23,6 +23,10 @@ from .chat_query import MEETING_STOP_WORDS, ChatState, _speaker_clause, _state_s
 logger = logging.getLogger("fs-ai-engine.chat_graph")
 
 
+# How much better (cosine similarity) the best match across all meetings must be before a guessed scope is dropped
+INFERRED_SCOPE_MARGIN = 0.05
+
+
 def enrich_chunk_text(speaker: str, timestamp: str, text: str) -> str:
     """Prefixes a transcript chunk with speaker and timestamp metadata for embedding/retrieval context."""
     clean_speaker = (speaker or "Unknown").strip()
@@ -104,6 +108,7 @@ async def vector_retrieval_node(state: ChatState) -> dict[str, Any]:
     vec_str = "[" + ",".join(str(x) for x in query_vector) + "]" if has_vector else "[]"
 
     retrieved_chunks: list[dict[str, Any]] = []
+    widened = False
 
     if AsyncSessionLocal is not None:
         async with AsyncSessionLocal() as session:
@@ -128,13 +133,15 @@ async def vector_retrieval_node(state: ChatState) -> dict[str, Any]:
                 "u_id": user_id,
             }
 
-            # Scope Filtering
+            # Scope Filtering (kept apart so an inferred scope can be dropped again if it turns out to be wrong)
+            scope_sql: list[str] = []
             if resolved_meeting_id:
-                query_parts.append("AND (t.metadata->>'meeting_id' = :m_id OR t.meeting_id = :m_id)")
+                scope_sql.append("AND (t.metadata->>'meeting_id' = :m_id OR t.meeting_id = :m_id)")
                 params["m_id"] = resolved_meeting_id
             elif state.get("date_meeting_ids"):
-                query_parts.append("AND t.meeting_id = ANY(:m_ids)")
+                scope_sql.append("AND t.meeting_id = ANY(:m_ids)")
                 params["m_ids"] = list(state["date_meeting_ids"])
+            query_parts.extend(scope_sql)
 
             if project_id:
                 query_parts.append("AND (t.metadata->>'project_id' = :p_id OR m.project_id = :p_id)")
@@ -168,6 +175,25 @@ async def vector_retrieval_node(state: ChatState) -> dict[str, Any]:
                 fallback_params = {k: v for k, v in params.items() if not k.startswith("spk_")}
                 res = await session.execute(text(fallback_sql), fallback_params)
                 rows = res.fetchall()
+
+            # A meeting scope the system GUESSED (from a title, a date or wording in the question) is only a hint.
+            # If the same search over all of the account's meetings finds clearly better evidence, the guess was
+            # wrong: drop it instead of answering "not found" from the wrong meeting. A scope the user picked
+            # explicitly in the UI is never overridden.
+            widened = False
+            if scope_sql and state.get("meeting_scope_inferred") and has_vector and not state.get("time_scope"):
+                wide_parts = [p for p in query_parts if p not in scope_sql]
+                wide_params = {k: v for k, v in params.items() if k not in ("m_id", "m_ids")}
+                wide_rows = (await session.execute(text(" ".join(wide_parts) + order_by), wide_params)).fetchall()
+                scoped_best = max((float(r[10] or 0.0) for r in rows), default=-1.0)
+                wide_best = max((float(r[10] or 0.0) for r in wide_rows), default=-1.0)
+                if wide_best > scoped_best + INFERRED_SCOPE_MARGIN:
+                    logger.info(
+                        f"[LANGGRAPH: VECTOR_RETRIEVAL] Inferred meeting scope dropped "
+                        f"(best similarity {scoped_best:.3f} inside it vs {wide_best:.3f} across all meetings)."
+                    )
+                    rows, widened = wide_rows, True
+                    resolved_meeting_id = None
 
             candidates: list[dict[str, Any]] = []
             for r in rows:
@@ -291,6 +317,12 @@ async def vector_retrieval_node(state: ChatState) -> dict[str, Any]:
         f"Scores: [{min(scores):.2f} - {max(scores):.2f}] | Latency: {retrieval_latency_ms:.2f}ms"
     )
 
-    return {
-        "retrieved_chunks": retrieved_chunks,
-    }
+    result: dict[str, Any] = {"retrieved_chunks": retrieved_chunks}
+    if widened:
+        result.update(
+            meeting_id=None,
+            date_meeting_ids=None,
+            no_meeting_on_date=None,
+            reasoning=f"{state.get('reasoning', '')} | Guessed meeting scope dropped: better matches exist in other meetings",
+        )
+    return result
