@@ -1,4 +1,3 @@
-import json
 import logging
 import re
 from typing import Any, ClassVar
@@ -21,7 +20,7 @@ class MeetingSummarizer:
     - Action Commitments (grounded to Level 1 turn IDs + owner attribution)
     - Blockers & Dependencies (grounded to Level 1 turn IDs)
 
-    Supports structured LLM extraction when API keys are configured, with automatic failover to deterministic heuristic grounding.
+    Extraction is deterministic (pattern matching on tagged turns); no LLM call is made.
     """
 
     DECISION_PATTERNS: ClassVar[list[re.Pattern]] = [
@@ -30,10 +29,11 @@ class MeetingSummarizer:
         re.compile(r"\b(let's proceed with|moving forward with|conclusion is)\b", re.IGNORECASE),
     ]
 
+    # Transcript characters sent when writing the overview (long meetings are sampled evenly, not cut off)
+    OVERVIEW_PROMPT_CHARS: ClassVar[int] = 60_000
+
     def __init__(self, settings: Settings | None = None):
         self.settings = settings or get_settings()
-        self.llm_api_key = self.settings.GEMINI_API_KEY
-        self.llm_model = self.settings.llm_model
 
     def generate_intelligence(
         self,
@@ -41,6 +41,7 @@ class MeetingSummarizer:
         turns: list[SpeakerTurn],
         segments: list[TopicSegment] | None = None,
         title: str | None = None,
+        write_overview: bool = False,
     ) -> Level3Summary:
         """
         Generate Level 3 meeting intelligence node strictly grounded to Level 1 source chunk IDs.
@@ -50,6 +51,8 @@ class MeetingSummarizer:
             turns: List of tagged Level 1 SpeakerTurn objects.
             segments: Optional list of Level 2 TopicSegment objects.
             title: Optional meeting title.
+            write_overview: Ask the LLM for a short written overview (only worth it when the meeting has no
+                Fireflies summary). Falls back to the template overview on any failure.
 
         Returns:
             Validated Level3Summary object with deterministic ID mtg_<id>_sum.
@@ -71,19 +74,51 @@ class MeetingSummarizer:
                 total_segments_analyzed=0,
             )
 
-        # 1. Attempt Structured LLM Extraction if credentials are configured
-        if self.llm_api_key:
+        result = self._extract_deterministically(summary_id, meeting_id, turns, segments, title)
+        if write_overview and self.settings.GEMINI_API_KEY:
             try:
-                llm_result = self._extract_via_llm(meeting_id, turns, segments, title)
-                if llm_result:
-                    return self._enforce_grounding_guardrails(summary_id, meeting_id, title, llm_result, turns, segments)
+                written = self._write_overview(turns, segments, title)
+                if written:
+                    result.overview = written
             except Exception as exc:
-                logger.warning(
-                    f"LLM intelligence extraction failed ({exc}). Falling back to deterministic grounding engine."
-                )
+                logger.warning(f"LLM overview failed ({exc}). Keeping the template overview.")
+        return result
 
-        # 2. Deterministic Extraction Engine
-        return self._extract_deterministically(summary_id, meeting_id, turns, segments, title)
+    def _write_overview(
+        self, turns: list[SpeakerTurn], segments: list[TopicSegment] | None, title: str | None
+    ) -> str | None:
+        """One short LLM call: a 3-5 sentence overview of what was discussed. Returns None if the call fails."""
+        lines = [f"{t.speaker_name}: {t.text}" for t in turns]
+        total = sum(len(line) + 1 for line in lines)
+        if total > self.OVERVIEW_PROMPT_CHARS:
+            keep_every = -(-total // self.OVERVIEW_PROMPT_CHARS)  # ceil: spread the sample across the whole meeting
+            lines = [line[:600] for line in lines[::keep_every]]
+        topics = "; ".join(seg.title for seg in segments) if segments else "not available"
+        payload: dict[str, Any] = {
+            "model": self.settings.llm_model,
+            "messages": [
+                {
+                    "role": "system",
+                    "content": "You write concise, factual meeting overviews. Use only what the transcript says; never invent details.",
+                },
+                {
+                    "role": "user",
+                    "content": (
+                        f"Meeting title: {title or 'Untitled'}\nTopics: {topics}\n\nTranscript:\n" + "\n".join(lines)
+                        + "\n\nWrite a 3-5 sentence overview of what was discussed and any outcomes. Plain text, no headings or bullets."
+                    ),
+                },
+            ],
+            "temperature": 0.2,
+        }
+        headers = {"Authorization": f"Bearer {self.settings.GEMINI_API_KEY}", "Content-Type": "application/json"}
+        with httpx.Client(timeout=30.0) as client:
+            resp = client.post(f"{self.settings.GEMINI_BASE_URL.rstrip('/')}/chat/completions", headers=headers, json=payload)
+        if resp.status_code != 200:
+            logger.error(f"LLM overview returned status {resp.status_code}")
+            return None
+        text = (resp.json()["choices"][0]["message"]["content"] or "").strip()
+        return text or None
 
     def _extract_deterministically(
         self,
@@ -140,132 +175,6 @@ class MeetingSummarizer:
 
         # Overview
         overview = self._synthesize_overview(meeting_id, turns, segments, title, participants)
-
-        # Fallback commitment to ensure at least one grounded item if meeting is substantive
-        if not commitments and turns:
-            substantive_turns = [t for t in turns if len(t.text.split()) > 8]
-            if substantive_turns:
-                lead_turn = substantive_turns[0]
-                commitments.append(
-                    GroundedItem(
-                        text=f"Continue execution on topics discussed by {lead_turn.speaker_name}: \"{lead_turn.text[:100]}...\"",
-                        source_chunk_ids=[lead_turn.turn_id],
-                        owner=lead_turn.speaker_name,
-                        category="action_item",
-                    )
-                )
-
-        return Level3Summary(
-            summary_id=summary_id,
-            meeting_id=meeting_id,
-            title=title or f"Meeting {meeting_id}",
-            overview=overview,
-            decisions=decisions,
-            commitments=commitments,
-            blockers=blockers,
-            participants=participants,
-            total_turns_analyzed=len(turns),
-            total_segments_analyzed=len(segments) if segments else 0,
-        )
-
-    def _extract_via_llm(
-        self,
-        meeting_id: str,
-        turns: list[SpeakerTurn],
-        segments: list[TopicSegment] | None,
-        title: str | None,
-    ) -> dict[str, Any] | None:
-        """Call structured LLM endpoint via HTTP request with schema enforcement and timeout handling."""
-        turns_context = "\n".join(
-            [f"[{t.turn_id}] {t.speaker_name}: {t.text}" for t in turns]
-        )
-
-        system_prompt = (
-            """
-            You are an expert executive meeting analyst. Extract the executive overview, ratified decisions,action commitments, and blockers from the transcript.
-            CRITICAL: Every extracted decision, commitment, and blocker MUST cite the exact source Level 1 turn ID (e.g. mtg_<id>_turn_<NNN>) in `source_chunk_ids`.
-            """
-        )
-
-        user_prompt = f"""
-            Meeting Title: {title or meeting_id}
-            Transcript Turns:
-            {turns_context}
-
-            Output ONLY valid JSON with this exact schema:
-            {{
-                "overview": "Comprehensive meeting summary",
-                "decisions": [{{"text": "Decision description", "source_chunk_ids": ["turn_id"], "category": "decision"}}],
-                "commitments": [{{"text": "Action commitment", "source_chunk_ids": ["turn_id"], "owner": "Assignee name", "category": "action_item"}}],
-                "blockers": [{{"text": "Blocker description", "source_chunk_ids": ["turn_id"], "category": "blocker"}}]
-            }}
-            """
-        headers = {
-            "Authorization": f"Bearer {self.llm_api_key}",
-            "Content-Type": "application/json",
-        }
-        payload = {
-            "model": self.llm_model,
-            "messages": [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt},
-            ],
-            "response_format": {"type": "json_object"},
-            "temperature": 0.1,
-        }
-
-        # 30-second bounded timeout to protect synchronous SLA
-        with httpx.Client(timeout=30.0) as client:
-            resp = client.post(
-                f"{self.settings.GEMINI_BASE_URL.rstrip('/')}/chat/completions", headers=headers, json=payload
-            )
-            if resp.status_code == 200:
-                raw_json = resp.json()["choices"][0]["message"]["content"]
-                return json.loads(raw_json)
-            else:
-                logger.error(f"LLM API returned status {resp.status_code}: {resp.text}")
-                return None
-
-    def _enforce_grounding_guardrails(
-        self,
-        summary_id: str,
-        meeting_id: str,
-        title: str | None,
-        data: dict[str, Any],
-        turns: list[SpeakerTurn],
-        segments: list[TopicSegment] | None,
-    ) -> Level3Summary:
-        """
-        Validate that every source_chunk_id returned by the LLM maps to a genuine Level 1 turn ID.
-        Discards hallucinated IDs and ensures strict Pydantic model validity.
-        """
-        valid_turn_ids: set[str] = {t.turn_id for t in turns}
-        fallback_turn_id = turns[0].turn_id if turns else ""
-
-        def clean_items(raw_items: list[dict[str, Any]], default_cat: str) -> list[GroundedItem]:
-            grounded: list[GroundedItem] = []
-            for item in raw_items:
-                raw_ids = item.get("source_chunk_ids", [])
-                valid_ids = [cid for cid in raw_ids if cid in valid_turn_ids]
-                # If LLM failed to provide valid IDs, anchor to first turn rather than crashing
-                final_ids = valid_ids if valid_ids else ([fallback_turn_id] if fallback_turn_id else [])
-                if final_ids and item.get("text"):
-                    grounded.append(
-                        GroundedItem(
-                            text=str(item["text"]).strip(),
-                            source_chunk_ids=final_ids,
-                            owner=item.get("owner"),
-                            category=item.get("category", default_cat),
-                        )
-                    )
-            return grounded
-
-        decisions = clean_items(data.get("decisions", []), "decision")
-        commitments = clean_items(data.get("commitments", []), "action_item")
-        blockers = clean_items(data.get("blockers", []), "blocker")
-
-        participants = list(dict.fromkeys(t.speaker_name for t in turns if t.speaker_name))
-        overview = data.get("overview") or self._synthesize_overview(meeting_id, turns, segments, title, participants)
 
         return Level3Summary(
             summary_id=summary_id,

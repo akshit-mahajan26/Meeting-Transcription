@@ -5,15 +5,9 @@ from pydantic import BaseModel
 
 from ..core.config import Settings, get_settings
 from ..models.schemas import (
-    ExtractIntelligenceRequest,
     HierarchicalPipelineResult,
-    Level3Summary,
     NormalizationResult,
     RawTranscriptPayload,
-    SegmentTopicsRequest,
-    SpeakerTurn,
-    TagSignalsRequest,
-    TopicSegment,
 )
 from ..services.embedding_service import EmbeddingService
 from ..services.normalizer import SpeakerNormalizer
@@ -22,6 +16,13 @@ from ..services.signal_tagger import SignalTagger
 from ..services.summarizer import MeetingSummarizer
 
 router = APIRouter(prefix="/transcript", tags=["transcript"])
+
+
+def _has_native_summary(summary: dict | str | None) -> bool:
+    """True if Fireflies supplied a usable summary (the backend stores that instead of the engine's overview)."""
+    if isinstance(summary, dict):
+        return any(str(summary.get(k) or "").strip() for k in ("overview", "shorthand_bullet", "bullet_gist", "gist"))
+    return bool(isinstance(summary, str) and summary.strip())
 
 
 # ==============================================================================
@@ -147,6 +148,7 @@ async def process_full_pipeline(
         turns=tagged_turns,
         segments=segments,
         title=payload.title,
+        write_overview=not _has_native_summary(payload.summary),
     )
 
     stats = {
@@ -191,77 +193,3 @@ async def embed_texts_endpoint(
     vectors = await embedding_service.generate_embeddings(request.texts)
     dims = len(vectors[0]) if vectors else 1536
     return EmbedTextsResponse(embeddings=vectors, dimensions=dims)
-
-
-
-@router.post(
-    "/tag-signals",
-    response_model=list[SpeakerTurn],
-    status_code=status.HTTP_200_OK,
-    summary="Tag Level 1 turns with conversational signals",
-    description="Processes SpeakerTurns and flags questions, commitments, and blockers.",
-)
-def tag_signals_endpoint(
-    request: TagSignalsRequest,
-    tagger: SignalTagger = Depends(get_signal_tagger),
-) -> list[SpeakerTurn]:
-    """Thin handler delegating signal tagging to SignalTagger service."""
-    return tagger.tag_turns(request.turns)
-
-
-@router.post(
-    "/segment-topics",
-    response_model=list[TopicSegment],
-    status_code=status.HTTP_200_OK,
-    summary="Group Level 1 turns into Level 2 Topic Segments",
-    description="Executes hybrid boundary detection with similarity guardrails and tangent protection.",
-)
-async def segment_topics_endpoint(
-    request: SegmentTopicsRequest,
-    segmenter: TopicSegmenter = Depends(get_topic_segmenter),
-) -> list[TopicSegment]:
-    """Thin handler delegating topic segmentation to TopicSegmenter service."""
-    return await segmenter.segment_transcript_async(
-        meeting_id=request.meeting_id,
-        turns=request.turns,
-        similarity_threshold_override=request.similarity_threshold,
-        min_turns_override=request.min_turns,
-        max_turns_override=request.max_turns,
-    )
-
-
-@router.post(
-    "/extract-intelligence",
-    response_model=Level3Summary,
-    status_code=status.HTTP_200_OK,
-    summary="Extract Level 3 meeting intelligence",
-    description="Synthesizes executive overview, decisions, commitments, and blockers grounded to Level 1 turn IDs.",
-)
-def extract_intelligence_endpoint(
-    request: ExtractIntelligenceRequest,
-    summarizer: MeetingSummarizer = Depends(get_meeting_summarizer),
-) -> Level3Summary:
-    """Thin handler delegating intelligence extraction to MeetingSummarizer service."""
-    return summarizer.generate_intelligence(
-        meeting_id=request.meeting_id,
-        turns=request.turns,
-        segments=request.segments,
-        title=request.title,
-    )
-
-
-
-
-
-# ==============================================================================
-# Phase 4: Grounded Chatbot Synthesis Endpoint (RAG & OpenRouter LLM)
-# ==============================================================================
-
-
-
-
-
-
-
-
-

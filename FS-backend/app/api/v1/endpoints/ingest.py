@@ -7,22 +7,22 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
 from pydantic import BaseModel, Field, HttpUrl
 from sqlalchemy.orm import Session
 
-from ...api.deps import get_current_user
-from ...core.database import UserModel, get_db
-from ...services.fireflies_client import (
+from ....api.deps import get_current_user
+from ....core.database import UserModel, get_db
+from ....services.fireflies_client import (
     FirefliesClient,
     get_fireflies_client,
 )
-from ...services.ingestion_failures import record_failure
-from ...services.ownership import get_owned_meeting, meeting_taken
-from ...services.pipeline_orchestrator import (
+from ....services.ingestion_failures import record_failure
+from ....services.ownership import get_owned_meeting, meeting_taken
+from ....services.pipeline_orchestrator import (
     BackendPipelineOrchestrator,
     get_backend_pipeline_orchestrator,
 )
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/meetings", tags=["meetings"])
+router = APIRouter()
 
 SUPPORTED_MEDIA_EXTENSIONS = (".mp3", ".mp4", ".wav", ".m4a", ".aac", ".ogg", ".webm", ".flac")
 

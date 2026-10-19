@@ -105,8 +105,9 @@ class EmbeddingService:
 
                 return all_embeddings
             except (OpenAIError, Exception) as exc:
-                logger.error(f"Gemini embedding generation failed: {exc}. Falling back to deterministic embedding.")
-                return self._generate_deterministic_embeddings(sanitized_texts)
+                # Never substitute fake vectors for a real provider failure: they would be stored as genuine embeddings
+                logger.error(f"Gemini embedding generation failed: {exc}")
+                raise EmbeddingServiceError(f"Embedding provider failed: {exc}") from exc
 
         # Deterministic vector generation when API key is not supplied (test / offline mode)
         logger.debug(

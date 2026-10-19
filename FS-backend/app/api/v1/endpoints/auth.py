@@ -3,7 +3,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from ....api.deps import get_current_user
-from ....core.database import UserModel, get_db
+from ....core.database import MeetingModel, MeetingTopicModel, ProjectModel, SpeakerTurnModel, UserModel, get_db
 from ....core.security import create_access_token, hash_password, verify_password
 from ....schemas.auth import Credentials, TokenResponse, UserResponse
 
@@ -28,6 +28,10 @@ def signup(payload: Credentials, db: Session = Depends(get_db)) -> TokenResponse
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="An account with this email already exists.")
     user = UserModel(email=payload.email, password_hash=hash_password(payload.password))
     db.add(user)
+    db.flush()
+    # Data ingested before accounts existed has no owner; the next account to sign up adopts it
+    for model in (ProjectModel, MeetingModel, MeetingTopicModel, SpeakerTurnModel):
+        db.query(model).filter(model.user_id.is_(None)).update({model.user_id: user.id}, synchronize_session=False)
     try:
         db.commit()
     except IntegrityError as err:  # two signups racing on the same email

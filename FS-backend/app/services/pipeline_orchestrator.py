@@ -20,6 +20,11 @@ from .ownership import claim_project, get_owned_meeting
 
 logger = logging.getLogger(__name__)
 
+def _fmt_ts(sec: float) -> str:
+    s = max(0, round(float(sec or 0.0)))
+    return f"{s // 3600:02d}:{(s % 3600) // 60:02d}:{s % 60:02d}"
+
+
 class BackendPipelineOrchestrator:
     """
     Background Pipeline Orchestrator for FS-backend.
@@ -210,6 +215,38 @@ class BackendPipelineOrchestrator:
         # Prioritize Fireflies overview, fallback to AI Engine summary
         summary_text = ff_summary_text or ai_summary_text or ""
 
+        # 3b. Fill in any missing embeddings BEFORE opening the write transaction (no HTTP call while rows are held)
+        missing_indices: list[int] = []
+        texts_to_embed: list[str] = []
+        for idx, t in enumerate(level1_turns):
+            emb = t.get("embedding")
+            if not (emb and len(emb) == 1536):
+                missing_indices.append(idx)
+                spk = str(t.get("speaker_name") or t.get("speaker") or "Unknown Speaker")
+                txt = str(t.get("text") or "").strip()
+                texts_to_embed.append(f"[{_fmt_ts(float(t.get('start_time', 0.0)))}] {spk}: {txt}")
+
+        if missing_indices:
+            logger.info(f"Generating missing embeddings for {len(texts_to_embed)} turns via AI Engine /embed endpoint...")
+            try:
+                async with httpx.AsyncClient(timeout=120.0) as client:
+                    emb_resp = await client.post(
+                        f"{self.ai_engine_url}/api/v1/transcript/embed",
+                        json={"texts": texts_to_embed},
+                        headers=self.engine_headers,
+                    )
+                emb_resp.raise_for_status()
+                for m_idx, vec in zip(missing_indices, emb_resp.json().get("embeddings", []), strict=False):
+                    if len(vec) == 1536:
+                        level1_turns[m_idx]["embedding"] = vec
+            except Exception as emb_err:
+                raise PipelineOrchestratorError(f"Could not generate embeddings for meeting '{meeting_id}': {emb_err}") from emb_err
+            still_missing = sum(1 for t in level1_turns if not (t.get("embedding") and len(t["embedding"]) == 1536))
+            if still_missing:
+                raise PipelineOrchestratorError(
+                    f"{still_missing} of {len(level1_turns)} turns of meeting '{meeting_id}' have no embedding; not saving a half-searchable meeting."
+                )
+
         # 4. Atomic 4-Tier Database Upsert
         db = SessionLocal()
         try:
@@ -270,39 +307,6 @@ class BackendPipelineOrchestrator:
             db.flush()
 
             # Tier 4: Speaker Turns with Embeddings and Rich Metadata
-            def _fmt_ts(sec: float) -> str:
-                s = max(0, round(float(sec or 0.0)))
-                return f"{s // 3600:02d}:{(s % 3600) // 60:02d}:{s % 60:02d}"
-
-            # Check if any turn is missing embeddings
-            missing_indices = []
-            texts_to_embed = []
-            for idx, t in enumerate(level1_turns):
-                emb = t.get("embedding")
-                if not (emb and len(emb) == 1536):
-                    missing_indices.append(idx)
-                    spk = str(t.get("speaker_name") or t.get("speaker") or "Unknown Speaker")
-                    txt = str(t.get("text") or "").strip()
-                    ts = _fmt_ts(float(t.get("start_time", 0.0)))
-                    texts_to_embed.append(f"[{ts}] {spk}: {txt}")
-
-            if missing_indices and texts_to_embed:
-                try:
-                    logger.info(f"Generating missing embeddings for {len(texts_to_embed)} turns via AI Engine /embed endpoint...")
-                    async with httpx.AsyncClient(timeout=60.0) as client:
-                        emb_resp = await client.post(
-                            f"{self.ai_engine_url}/api/v1/transcript/embed",
-                            json={"texts": texts_to_embed},
-                            headers=self.engine_headers,
-                        )
-                        if emb_resp.status_code == 200:
-                            emb_list = emb_resp.json().get("embeddings", [])
-                            for m_idx, vec in zip(missing_indices, emb_list, strict=False):
-                                if len(vec) == 1536:
-                                    level1_turns[m_idx]["embedding"] = vec
-                except Exception as emb_err:
-                    logger.warning(f"Could not batch fetch missing embeddings: {emb_err}")
-
             turn_models = []
             for t in level1_turns:
                 t_num = int(t.get("turn_number", 1))

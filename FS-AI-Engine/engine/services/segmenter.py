@@ -101,26 +101,10 @@ class TopicSegmenter:
 
         return False
 
-    def segment_transcript(
-        self,
-        meeting_id: str,
-        turns: list[SpeakerTurn],
-        similarity_threshold_override: float | None = None,
-        min_turns_override: int | None = None,
-        max_turns_override: int | None = None,
-    ) -> list[TopicSegment]:
-        """Synchronous wrapper around segment_transcript_async (for non-async callers)."""
-        return asyncio.run(self.segment_transcript_async(
-            meeting_id, turns, similarity_threshold_override, min_turns_override, max_turns_override,
-        ))
-
     async def segment_transcript_async(
         self,
         meeting_id: str,
         turns: list[SpeakerTurn],
-        similarity_threshold_override: float | None = None,
-        min_turns_override: int | None = None,
-        max_turns_override: int | None = None,
     ) -> list[TopicSegment]:
         """
         Asynchronously segment turns into cohesive Level 2 topic segments with LLM-generated executive headings.
@@ -128,9 +112,9 @@ class TopicSegmenter:
         if not turns:
             return []
 
-        threshold = similarity_threshold_override if similarity_threshold_override is not None else self.similarity_threshold
-        min_turns = min_turns_override if min_turns_override is not None else self.min_turns
-        max_turns = max_turns_override if max_turns_override is not None else self.max_turns
+        threshold = self.similarity_threshold
+        min_turns = self.min_turns
+        max_turns = self.max_turns
 
         if len(turns) <= min_turns:
             return [await self._build_segment_async(meeting_id, 1, turns, confidence=1.0)]

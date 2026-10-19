@@ -201,25 +201,3 @@ class HierarchicalPipelineResult(BaseModel):
     level2_segments: list[TopicSegment]
     level3_summary: Level3Summary
     stats: dict[str, Any] = Field(default_factory=dict)
-
-
-class TagSignalsRequest(BaseModel):
-    """Request to run signal detection on existing Level 1 turns."""
-    turns: list[SpeakerTurn]
-
-
-class SegmentTopicsRequest(BaseModel):
-    """Request to run topic segmentation on Level 1 turns."""
-    meeting_id: str
-    turns: list[SpeakerTurn]
-    similarity_threshold: float | None = None
-    min_turns: int | None = None
-    max_turns: int | None = None
-
-
-class ExtractIntelligenceRequest(BaseModel):
-    """Request to generate Level 3 summary node from turns and segments."""
-    meeting_id: str
-    title: str | None = None
-    turns: list[SpeakerTurn]
-    segments: list[TopicSegment] | None = None
