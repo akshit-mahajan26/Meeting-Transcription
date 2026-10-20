@@ -58,7 +58,7 @@ def build_meeting_details(available_meetings: list[dict[str, Any]], meeting_ids:
 
 def build_catalog_records(
     *,
-    query_lower: str,
+    entities: set[str],
     force_all: bool,
     available_projects: list[dict[str, Any]],
     available_meetings: list[dict[str, Any]],
@@ -70,15 +70,15 @@ def build_catalog_records(
     """
     Builds the verified database catalog blocks for the synthesis prompt.
     `force_all` is set for catalog-intent questions: the records are always supplied, no matter how the question
-    is worded. Otherwise each block is added only when the question mentions its entity. Counts are computed
+    is worded. Otherwise each block is added only when the analysis step marked its entity (projects, meetings,
+    participants) as needed. Counts are computed
     here so the model never has to count.
     """
     context = ""
     instructions: list[str] = []
-    mentions = lambda *words: any(w in query_lower for w in words)  # noqa: E731
 
     # Projects (with deterministic meeting counts per project)
-    if available_projects and (force_all or mentions("project")):
+    if available_projects and (force_all or "projects" in entities):
         per_project: dict[str, int] = {}
         unassigned = 0
         for m in available_meetings:
@@ -106,10 +106,7 @@ def build_catalog_records(
         )
 
     # Meetings
-    general_meeting_query = mentions("meeting") and mentions(
-        "all", "list", "how many", "which", "available", "recorded", "what meetings"
-    )
-    if available_meetings and (force_all or (general_meeting_query and not scoped_to_meeting and not has_speakers)):
+    if available_meetings and (force_all or ("meetings" in entities and not scoped_to_meeting and not has_speakers)):
         rows = available_meetings[:_MAX_CATALOG_MEETING_ROWS]
         mtg_lines = "\n".join(
             f"- **{m['title']}** (Project: {m.get('project_id') or 'Unassigned'}, "
@@ -132,10 +129,7 @@ def build_catalog_records(
         )
 
     # Participants
-    participant_query = mentions("speaker", "participant", "attendee", "participate", "attend") and mentions(
-        "all", "list", "how many", "who", "which", "available"
-    )
-    if available_speakers and (force_all or participant_query):
+    if available_speakers and (force_all or "participants" in entities):
         proj_str = f" for Project '{project_id}'" if project_id else ""
         spk_lines = "\n".join(f"- {s}" for s in available_speakers)
         context += (
@@ -156,7 +150,7 @@ def _unscope_proj(pid: str | None) -> str | None:
     return pid
 
 
-# Date resolution: which meetings does the question's date range refer to? (the range comes from rewrite_query)
+# Date resolution: which meetings does the question's date range refer to? (the range comes from analyze_query)
 
 def _meeting_day(meeting: dict[str, Any]) -> date | None:
     """Calendar day of a meeting from its stored 'YYYY-MM-DD HH:MM UTC' date, or None if unreadable."""

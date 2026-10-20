@@ -1,15 +1,12 @@
 """
 FS-AI-Engine/graphs/chat_entities.py
 ====================================
-Name and title matching used as the fallback when the rewrite step cannot resolve entities:
-stop-word vocabularies, fuzzy name matching, participant and meeting resolution.
+Stop-word vocabularies and fuzzy name matching, used to validate participant names and to match transcript text.
 """
 
 from __future__ import annotations
 
 import difflib
-import re
-from typing import Any
 
 # General English grammatical and conversational stop words
 MEETING_STOP_WORDS = {
@@ -65,145 +62,3 @@ def is_name_token_match(token: str, candidate: str) -> bool:
         if difflib.SequenceMatcher(None, t, c).ratio() >= 0.85:
             return True
     return False
-
-
-def resolve_speakers_from_query(
-    query: str,
-    speakers_db: list[str],
-    project_tokens: set[str] | None = None,
-) -> list[tuple[str, str, str]]:
-    """
-    Identifies participants dynamically and generically mentioned in the query.
-    Distinguishes proper personal names from generic roles and titles:
-    1. Full normalized name match against complete multi-token identifiers.
-    2. Compound multi-word role/title phrase matching across adjacent tokens.
-    3. Distinctive proper name token matching with common organizational terms filtered.
-    Suppresses single-token false-positive matches on common organizational vocabulary,
-    project identifiers, and entity container keywords.
-    Returns a list of (resolved_speaker, matched_token, reasoning_log).
-    """
-    q_lower = query.lower()
-    q_words = set(re.findall(r"[a-zA-Z0-9]+", q_lower))
-    found_speakers: list[tuple[str, str, str]] = []
-    seen = set()
-
-    for spk in sorted(speakers_db, key=lambda s: len(s), reverse=True):
-        spk_clean = spk.strip()
-        if not spk_clean:
-            continue
-        # Remove trailing database generated UUIDs, Slack user IDs, or hash IDs if present
-        clean_name = re.sub(r"\b[A-Z0-9_]{10,}\b", "", spk_clean).strip()
-        clean_lower = clean_name.lower()
-
-        if not clean_lower or clean_lower in ORGANIZATIONAL_COMMON_WORDS:
-            continue
-
-        # Strategy 1: Dynamic multi-word speaker full-name match
-        if len(clean_lower) >= 4 and re.search(r"\b" + re.escape(clean_lower) + r"\b", q_lower):
-            if spk_clean not in seen:
-                seen.add(spk_clean)
-                found_speakers.append((spk_clean, clean_lower, f"Detected participant full name '{spk_clean}'"))
-            continue
-
-        # Strategy 2: Multi-token role / compound phrase match (2 or 3 tokens)
-        tokens = [p for p in re.findall(r"[a-zA-Z0-9]+", clean_name) if len(p) >= 2]
-        if len(tokens) >= 2:
-            matched_phrase = False
-            for i in range(len(tokens) - 1):
-                phrase = f"{tokens[i].lower()} {tokens[i+1].lower()}"
-                if re.search(r"\b" + re.escape(phrase) + r"\b", q_lower):
-                    if spk_clean not in seen:
-                        seen.add(spk_clean)
-                        found_speakers.append((spk_clean, phrase, f"Detected participant by role phrase '{phrase}' -> '{spk_clean}'"))
-                    matched_phrase = True
-                    break
-            if matched_phrase:
-                continue
-
-        # Strategy 3: Distinctive proper name token match (filters out organizational common words & project tokens)
-        distinctive_tokens = [
-            t for t in tokens
-            if len(t) >= 3
-            and t.lower() not in ORGANIZATIONAL_COMMON_WORDS
-            and not (project_tokens and t.lower() in project_tokens)
-        ]
-        for token in distinctive_tokens:
-            matched = False
-            for qw in q_words:
-                if is_name_token_match(qw, token):
-                    if spk_clean not in seen:
-                        seen.add(spk_clean)
-                        found_speakers.append((spk_clean, qw, f"Detected participant proper name '{qw}' -> '{spk_clean}'"))
-                    matched = True
-                    break
-            if matched:
-                break
-
-    return found_speakers
-
-
-def resolve_meeting_from_query(
-    query: str,
-    meetings_db: list[tuple[str, str]],
-    matched_speaker_phrase: str | None = None,
-    available_meetings: list[dict[str, Any]] | None = None,  # unused; kept for API compatibility
-) -> tuple[str | None, str | None, str]:
-    """
-    Identifies if a specific meeting title or ID is mentioned in the query.
-    Returns (resolved_meeting_id, resolved_meeting_title, reasoning_log).
-    """
-    q_lower = query.lower()
-
-    # If a speaker phrase matched, mask it out when detecting meeting title
-    q_for_meeting = q_lower
-    if matched_speaker_phrase:
-        q_masked = re.sub(r"\b" + re.escape(matched_speaker_phrase) + r"\b", " ", q_lower)
-        if any(w for w in re.findall(r"\w+", q_masked) if w not in MEETING_STOP_WORDS):
-            q_for_meeting = q_masked
-
-    # 1. Exact ID match (case-insensitive)
-    for m_id, m_title in meetings_db:
-        if m_id and m_id.lower() in q_lower:
-            m_title_clean = (m_title or m_id).strip()
-            return m_id, m_title_clean, f"Scoped to meeting '{m_title_clean}' ({m_id})"
-
-    # 2. Database Meeting Title Match (Token overlap and whole title match)
-    best_score = 0
-    best_m_id = None
-    best_m_title = None
-
-    for m_id, m_title in meetings_db:
-        if not m_title:
-            continue
-        m_title_clean = m_title.strip()
-        m_title_lower = m_title_clean.lower()
-
-        score = 0
-        norm_title = re.sub(r"[^a-zA-Z0-9\s]", " ", m_title_lower)
-        norm_title = " ".join(norm_title.split())
-        var_title = " ".join([w for w in norm_title.split() if w not in {"and", "&"}])
-
-        # Whole title match has highest precedence
-        if re.search(r"\b" + re.escape(norm_title) + r"\b", q_for_meeting):
-            score += 200 + len(norm_title)
-        elif len(var_title.split()) > 1 and re.search(r"\b" + re.escape(var_title) + r"\b", q_for_meeting):
-            score += 150 + len(var_title)
-        else:
-            title_tokens = [w for w in re.findall(r"[a-zA-Z0-9_\-]+", m_title_lower) if w not in MEETING_STOP_WORDS]
-            if title_tokens:
-                matched_distinctive = [t for t in title_tokens if re.search(r"\b" + re.escape(t) + r"\b", q_for_meeting)]
-                if matched_distinctive:
-                    match_ratio = len(matched_distinctive) / len(title_tokens)
-                    # Require at least 2 distinctive tokens or high coverage (>= 70%) to avoid hijacking by a single keyword
-                    if len(matched_distinctive) >= 2 or match_ratio >= 0.7:
-                        score = int(60 * match_ratio) + sum(len(t) for t in matched_distinctive)
-
-        if score > best_score:
-            best_score = score
-            best_m_id = m_id
-            best_m_title = m_title_clean
-
-    if best_score >= 40:
-        return best_m_id, best_m_title, f"Scoped to meeting '{best_m_title}' ({best_m_id})"
-
-    return None, None, "Universal semantic vector search across meeting transcripts"

@@ -25,6 +25,7 @@ from .chat_nodes import (
     llm_synthesis_node,
     vector_retrieval_node,
 )
+from .chat_query import QueryIntent
 
 logger = logging.getLogger("fs-ai-engine.chat_graph")
 
@@ -33,11 +34,31 @@ logger = logging.getLogger("fs-ai-engine.chat_graph")
 # Routing Conditions
 # ============================================================================
 
+_DEFAULT_SMALLTALK_REPLY = (
+    "Hello! I can help with your meeting transcripts. Ask about discussions, decisions, action items, "
+    "participants or projects."
+)
+
+
+async def smalltalk_node(state: ChatState) -> dict[str, Any]:
+    """Greetings and pleasantries get the reply the rewrite step left in `answer`: no retrieval, no citations."""
+    return {
+        "answer": state.get("answer") or _DEFAULT_SMALLTALK_REPLY,
+        "citations": [],
+        "citations_count": 0,
+        "provenance_verified": True,
+        "routing_mode": "LANGGRAPH_SMALLTALK",
+        "reasoning": "Greeting or pleasantry; no meeting lookup needed",
+    }
+
+
 def route_after_filters(state: ChatState) -> str:
     """
     Catalog questions (counts, lists of projects/meetings/participants) are answered from the
     relational records, so the embedding and vector search are skipped for them.
     """
+    if state.get("query_intent") == QueryIntent.SMALLTALK:
+        return "smalltalk"
     if state.get("no_meeting_on_date"):
         return "fallback"  # nothing was held on the requested date, so there is nothing to retrieve
     return "llm_synthesis" if state.get("skip_retrieval") else "embed_query"
@@ -75,11 +96,13 @@ def build_chat_graph() -> StateGraph:
     workflow.add_node("fallback", fallback_node)
 
     # 2. Linear Flow
+    workflow.add_node("smalltalk", smalltalk_node)
     workflow.add_edge(START, "extract_filters")
+    workflow.add_edge("smalltalk", END)
     workflow.add_conditional_edges(
         "extract_filters",
         route_after_filters,
-        {"embed_query": "embed_query", "llm_synthesis": "llm_synthesis", "fallback": "fallback"},
+        {"embed_query": "embed_query", "llm_synthesis": "llm_synthesis", "fallback": "fallback", "smalltalk": "smalltalk"},
     )
     workflow.add_edge("embed_query", "vector_retrieval")
 

@@ -8,7 +8,7 @@
 .pill-model { background: rgba(244, 114, 182, 0.12); color: #F9A8D4; border-color: rgba(244, 114, 182, 0.28); }
 .pill-scope { background: rgba(56, 189, 248, 0.12); color: #7DD3FC; border-color: rgba(56, 189, 248, 0.28); }
 
-.sources { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 0.5rem 0 0.6rem; }
+.sources { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: -0.5rem 0 0.6rem; }
 
 /* Zero-height popover-script iframe still occupies a flex-gap slot; collapse it (script still runs). */
 [data-testid="stChatMessage"] [data-testid="stElementContainer"]:has(iframe) { display: none; }

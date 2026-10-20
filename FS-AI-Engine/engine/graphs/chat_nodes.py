@@ -13,12 +13,12 @@ Implements the modular node functions executed within the ChatState StateGraph:
 from __future__ import annotations
 
 import logging
-import re
 from typing import Any
 
 from sqlalchemy import text
 
 from ..core.database import AsyncSessionLocal
+from .chat_analysis import analyze_query
 from .chat_citations import align_citations_with_answer, format_citations_node
 from .chat_query import (
     MEETING_STOP_WORDS,
@@ -27,12 +27,7 @@ from .chat_query import (
     QueryIntent,
     _speaker_clause,
     _state_speakers,
-    classify_query_intent,
     is_name_token_match,
-    is_pure_inventory_question,
-    normalize_entity_typos,
-    resolve_meeting_from_query,
-    resolve_speakers_from_query,
 )
 from .chat_records import (
     _unscope_proj,
@@ -41,7 +36,8 @@ from .chat_records import (
     meetings_in_date_range,
 )
 from .chat_retrieval import embed_query_node, enrich_chunk_text, vector_retrieval_node
-from .chat_synthesis import fallback_node, llm_synthesis_node, rewrite_query
+from .chat_rewrite import rewrite_query
+from .chat_synthesis import fallback_node, llm_synthesis_node
 
 # Dedicated AI Service Logger
 logger = logging.getLogger("fs-ai-engine.chat_graph")
@@ -54,18 +50,13 @@ __all__ = [
     "QueryIntent",
     "align_citations_with_answer",
     "build_catalog_records",
-    "classify_query_intent",
     "embed_query_node",
     "enrich_chunk_text",
     "extract_filters_node",
     "fallback_node",
     "format_citations_node",
     "is_name_token_match",
-    "is_pure_inventory_question",
     "llm_synthesis_node",
-    "normalize_entity_typos",
-    "resolve_meeting_from_query",
-    "resolve_speakers_from_query",
     "vector_retrieval_node",
 ]
 
@@ -93,7 +84,6 @@ async def extract_filters_node(state: ChatState) -> dict[str, Any]:
     available_projects: list[dict[str, Any]] = []
     available_speakers: list[str] = []
     reasoning = "Universal semantic vector search across meeting transcripts"
-    project_tokens: set[str] = set()
     time_scope: str | None = state.get("time_scope")
     cross_meeting = False
     raw_query = state.get("query", "").strip()
@@ -143,15 +133,6 @@ async def extract_filters_node(state: ChatState) -> dict[str, Any]:
                 except Exception:
                     pass
 
-            # Dynamically derive project title tokens from database records
-            db_project_tokens = {
-                w.lower()
-                for p in available_projects
-                for w in re.findall(r"[a-zA-Z0-9_\-]+", p.get("id", "") + " " + p.get("name", ""))
-                if len(w) > 2
-            }
-            project_tokens = set(db_project_tokens)
-
             # Dynamic Speaker List from database records
             spk_res = await session.execute(
                 text("SELECT DISTINCT COALESCE(metadata->>'speaker', speaker_name) FROM speaker_turns WHERE user_id = :u_id AND (speaker_name IS NOT NULL OR metadata->>'speaker' IS NOT NULL)"),
@@ -159,57 +140,30 @@ async def extract_filters_node(state: ChatState) -> dict[str, Any]:
             )
             available_speakers = [r[0] for r in spk_res.fetchall() if r[0]]
 
-            # 2. Structured query rewrite with known participant context and available meetings
-            rewrite_res = await rewrite_query(
-                raw_query,
-                state.get("history") or [],
+            # 2. Rewrite to a standalone question, then analyse it (intent, entities, dates, retrieval need)
+            query = await rewrite_query(raw_query, state.get("history") or [])
+            analysis = await analyze_query(
+                query,
                 available_speakers=available_speakers,
                 available_meetings=available_meetings,
+                available_projects=available_projects,
             )
-            query, date_from, date_to, _follow_up = rewrite_res[:4]
-            structured_speaker = getattr(rewrite_res, "speaker", None)
-            structured_time_scope = getattr(rewrite_res, "time_scope", None)
-            structured_intent = getattr(rewrite_res, "intent", None)
-            structured_meeting_id = getattr(rewrite_res, "meeting_id", None)
-            cross_meeting = getattr(rewrite_res, "cross_meeting", False)
-            if structured_time_scope:
-                time_scope = structured_time_scope
+            date_from, date_to = analysis.date_from, analysis.date_to
+            structured_speaker = analysis.speaker
+            structured_meeting_id = analysis.meeting_id
+            cross_meeting = analysis.cross_meeting
+            if analysis.time_scope:
+                time_scope = analysis.time_scope
 
-            if not project_id:
-                q_words_lower = set(re.findall(r"[a-zA-Z0-9]+", query.lower()))
-                for p in available_projects:
-                    p_id = p.get("id", "").strip()
-                    p_name = p.get("name", "").strip().lower()
-                    unscoped = (_unscope_proj(p_id) or "").lower()
-                    if (
-                        (p_id and p_id.lower() in q_words_lower)
-                        or (p_name and p_name in q_words_lower)
-                        or (unscoped and unscoped in q_words_lower)
-                    ):
-                        project_id = p_id
-                        break
+            if not project_id and analysis.project_id:
+                project_id = analysis.project_id
 
-            # 3. Dynamic Speaker Entity Extraction (Structured rewrite first, fallback to token matching)
-            matched_spk_phrase = None
+            # 3. Speaker from the analysis step
             if not resolved_speakers and structured_speaker:
                 resolved_speakers = [structured_speaker]
                 resolved_speaker = structured_speaker
-                matched_spk_phrase = structured_speaker
-
-            # Regex name matching is only a fallback for when the rewrite call failed; when the model answered
-            # (even "no speaker"), its answer stands.
-            if not resolved_speakers and structured_intent is None:
-                title_tokens = {w.lower() for t in meetings_dict.values() for w in re.findall(r"[a-zA-Z0-9]+", t)}
-                found_speakers = resolve_speakers_from_query(query, available_speakers, db_project_tokens | title_tokens)
-                if found_speakers:
-                    resolved_speakers = [s[0] for s in found_speakers]
-                    resolved_speaker = resolved_speakers[0]
-                    matched_spk_phrase = " ".join(s[1] for s in found_speakers)
-                    for s in found_speakers:
-                        logger.info(f"[LANGGRAPH: EXTRACT_FILTERS] {s[2]}")
 
             # 4. Dynamic Meeting Resolution
-            m_db_pairs = [(m[0], m[1]) for m in meetings_db]
             if resolved_meeting_id:
                 m_title = meetings_dict.get(resolved_meeting_id, resolved_meeting_id)
                 reasoning = f"Scoped to meeting '{m_title}' ({resolved_meeting_id})"
@@ -242,12 +196,11 @@ async def extract_filters_node(state: ChatState) -> dict[str, Any]:
                         spoke_in = {r[0] for r in rs_res.fetchall()}
                         if spoke_in:
                             rel_pool = [m for m in available_meetings if m["id"] in spoke_in]
-                    if cross_meeting:
-                        m_id, m_title, meeting_reasoning = None, None, "Cross-meeting query: searching across all meetings"
-                    else:
-                        m_id, m_title, meeting_reasoning = resolve_meeting_from_query(
-                            query, m_db_pairs, matched_spk_phrase
-                        )
+                    m_id = None
+                    meeting_reasoning = (
+                        "Cross-meeting query: searching across all meetings" if cross_meeting
+                        else "Universal semantic vector search across meeting transcripts"
+                    )
                     if not m_id and not cross_meeting and time_scope == "latest" and rel_pool:
                         newest = max(rel_pool, key=lambda m: str(m.get("date") or ""))
                         m_id, meeting_reasoning = newest["id"], f"Most recent meeting: '{newest['title']}' ({newest['id']})"
@@ -258,21 +211,22 @@ async def extract_filters_node(state: ChatState) -> dict[str, Any]:
                         resolved_meeting_id = m_id
                         reasoning = meeting_reasoning
 
-            # 5. Classify Query Intent (Structured from rewrite or fallback classifier)
-            query_intent = structured_intent or classify_query_intent(query, resolved_speakers)
+            # 5. Query intent comes from the analysis step
+            query_intent = analysis.intent
 
-            # Check if query is asking for participant list / roster (typo-tolerant)
-            q_lower = normalize_entity_typos(query).lower()
-            is_participant_list = any(w in q_lower for w in ["participant", "participants", "participated", "attendee", "attendees", "attended", "speaker", "speakers"]) and any(w in q_lower for w in ["who", "list", "show", "all", "what", "which"])
-            if is_participant_list and not resolved_speakers:
-                query_intent = QueryIntent.CATALOG
-                if project_id:
-                    p_spk_res = await session.execute(
-                        text("SELECT DISTINCT COALESCE(t.metadata->>'speaker', t.speaker_name) FROM speaker_turns t JOIN meetings m ON t.meeting_id = m.id WHERE t.user_id = :u_id AND m.user_id = :u_id AND m.project_id = :p_id AND (t.speaker_name IS NOT NULL OR t.metadata->>'speaker' IS NOT NULL)"),
-                        {"u_id": user_id, "p_id": project_id}
-                    )
-                    available_speakers = [r[0] for r in p_spk_res.fetchall() if r[0]]
-                    reasoning = f"Catalog query: Found {len(available_speakers)} participant(s) in project {project_id}"
+            # A participant roster for a project is scoped to that project's speakers
+            if (
+                query_intent == QueryIntent.CATALOG
+                and "participants" in analysis.catalog_entities
+                and not resolved_speakers
+                and project_id
+            ):
+                p_spk_res = await session.execute(
+                    text("SELECT DISTINCT COALESCE(t.metadata->>'speaker', t.speaker_name) FROM speaker_turns t JOIN meetings m ON t.meeting_id = m.id WHERE t.user_id = :u_id AND m.user_id = :u_id AND m.project_id = :p_id AND (t.speaker_name IS NOT NULL OR t.metadata->>'speaker' IS NOT NULL)"),
+                    {"u_id": user_id, "p_id": project_id}
+                )
+                available_speakers = [r[0] for r in p_spk_res.fetchall() if r[0]]
+                reasoning = f"Catalog query: Found {len(available_speakers)} participant(s) in project {project_id}"
 
             # 6. Intent-driven routing logic
             if query_intent == QueryIntent.PARTICIPANT_INVOLVEMENT and resolved_speakers:
@@ -331,44 +285,34 @@ async def extract_filters_node(state: ChatState) -> dict[str, Any]:
 
     else:
         # Fallback when running without a database session
-        rewrite_res = await rewrite_query(
-            raw_query,
-            state.get("history") or [],
-            available_meetings=state.get("available_meetings") or [],
+        query = await rewrite_query(raw_query, state.get("history") or [])
+        analysis = await analyze_query(
+            query,
             available_speakers=state.get("available_speakers") or [],
+            available_meetings=state.get("available_meetings") or [],
+            available_projects=state.get("available_projects") or [],
         )
-        query, date_from, date_to, _follow_up = rewrite_res[:4]
-        structured_speaker = getattr(rewrite_res, "speaker", None)
-        structured_time_scope = getattr(rewrite_res, "time_scope", None)
-        structured_intent = getattr(rewrite_res, "intent", None)
-        structured_meeting_id = getattr(rewrite_res, "meeting_id", None)
-        if structured_time_scope:
-            time_scope = structured_time_scope
-        if structured_speaker and not resolved_speakers:
-            resolved_speakers = [structured_speaker]
-            resolved_speaker = structured_speaker
-        if structured_meeting_id and not resolved_meeting_id and structured_meeting_id in {m.get("id") for m in state.get("available_meetings") or []}:
-            resolved_meeting_id = structured_meeting_id
+        if analysis.time_scope:
+            time_scope = analysis.time_scope
+        if analysis.speaker and not resolved_speakers:
+            resolved_speakers = [analysis.speaker]
+            resolved_speaker = analysis.speaker
+        if analysis.meeting_id and not resolved_meeting_id and analysis.meeting_id in {m.get("id") for m in state.get("available_meetings") or []}:
+            resolved_meeting_id = analysis.meeting_id
             reasoning = f"Scoped to meeting '{resolved_meeting_id}'"
-        query_intent = structured_intent or classify_query_intent(query, resolved_speakers)
+        query_intent = analysis.intent
 
     logger.info(
         f"[LANGGRAPH: EXTRACT_FILTERS] Intent: {query_intent} | Speakers: {resolved_speakers} | "
         f"Meeting: '{resolved_meeting_id}' | Relevant Meetings: {len(relevant_meetings)} | Projects: {len(available_projects)} | Reasoning: '{reasoning}'"
     )
 
-    # Attendance/involvement questions and pure inventory questions are answered strictly from the
-    # relational database records (speaker_turns / meetings), never from transcript vector search
+    # Pure attendance and pure inventory questions (the analysis says no transcript text is needed) are answered
+    # strictly from the relational database records (speaker_turns / meetings), never from transcript vector search
     # (which can confuse mentions of absence with actual attendance).
-    is_pure_attendance = query_intent == QueryIntent.PARTICIPANT_INVOLVEMENT and bool(relevant_meetings) and not any(
-        v in query.lower()
-        for v in ("say", "said", "discuss", "mention", "talk", "decid", "agree", "explain", "quote", "action item", "next step", "what did")
-    )
-    skip_retrieval = (
-        (query_intent == QueryIntent.CATALOG and is_pure_inventory_question(
-            query, project_tokens
-        ) and not re.search(r"\b(?:topics?|agenda items?)\b", normalize_entity_typos(query).lower()))
-        or is_pure_attendance
+    skip_retrieval = not analysis.needs_retrieval and (
+        query_intent == QueryIntent.CATALOG
+        or (query_intent == QueryIntent.PARTICIPANT_INVOLVEMENT and bool(relevant_meetings))
     )
 
     return {
@@ -390,4 +334,5 @@ async def extract_filters_node(state: ChatState) -> dict[str, Any]:
         "available_speakers": available_speakers,
         "relevant_meetings": relevant_meetings,
         "reasoning": reasoning,
-    }
+        "catalog_entities": analysis.catalog_entities,
+    } | ({"answer": analysis.reply or ""} if query_intent == QueryIntent.SMALLTALK else {})

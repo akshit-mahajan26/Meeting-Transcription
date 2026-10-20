@@ -23,10 +23,8 @@ from .chat_query import (
     QueryIntent,
     _state_speakers,
     is_name_token_match,
-    normalize_entity_typos,
 )
 from .chat_records import build_catalog_records, build_meeting_details
-from .chat_rewrite import _looks_like_follow_up, rewrite_query  # noqa: F401  (re-exported)
 
 # Dedicated AI Service Logger
 logger = logging.getLogger("fs-ai-engine.chat_graph")
@@ -126,7 +124,6 @@ async def llm_synthesis_node(state: ChatState) -> dict[str, Any]:
     """
     llm_start = time.time()
     query = state.get("query", "").strip()
-    query_lower = normalize_entity_typos(query).lower()
     is_catalog = state.get("query_intent") == QueryIntent.CATALOG
     retrieved_chunks = state.get("retrieved_chunks", [])
     resolved_speakers: list[str] = _state_speakers(state)
@@ -165,7 +162,7 @@ async def llm_synthesis_node(state: ChatState) -> dict[str, Any]:
     formatted_context = "\n---\n".join(context_blocks)
 
     extra_record_context, list_instructions = build_catalog_records(
-        query_lower=query_lower,
+        entities=set(state.get("catalog_entities") or []),
         force_all=is_catalog,
         available_projects=available_projects,
         available_meetings=available_meetings,
