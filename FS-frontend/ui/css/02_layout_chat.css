@@ -1,0 +1,163 @@
+/* --- 2. Streamlit Shell: Sidebar, Tabs & Metrics --- */
+section[data-testid="stSidebar"] {
+  top: 60px !important;
+  height: calc(100vh - 60px) !important;
+  z-index: 999980 !important;
+  background: var(--surface) !important;
+  border-right: 1px solid var(--border) !important;
+}
+
+[data-testid="stSidebarCollapsedControl"] {
+  position: fixed !important;
+  top: 72px !important;
+  left: 1rem !important;
+  z-index: 999985 !important;
+}
+
+[data-testid="stTabs"] [data-baseweb="tab-list"] { gap: 6px; border-bottom: 1px solid var(--border); }
+[data-testid="stTabs"] [data-baseweb="tab"] {
+  height: 42px; padding: 0 14px; border-radius: 10px 10px 0 0; color: var(--muted); font-weight: 500;
+  transition: color 0.15s ease, background 0.15s ease;
+}
+[data-testid="stTabs"] [data-baseweb="tab"]:hover { color: var(--text); background: rgba(255, 255, 255, 0.04); }
+[data-testid="stTabs"] [aria-selected="true"] { color: var(--accent-2); font-weight: 600; }
+[data-testid="stTabs"] [data-baseweb="tab-highlight"] { background: var(--accent-2); height: 2px; }
+[data-testid="stTabs"] [data-baseweb="tab-border"] { display: none; }
+
+[data-testid="stMetric"] { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 0.8rem 1rem; }
+[data-testid="stMetricLabel"] { color: var(--muted); font-size: 0.8rem; }
+[data-testid="stMetricValue"] { font-size: 1.5rem; font-weight: 600; line-height: 1.3; }
+
+.stButton > button, .stDownloadButton > button {
+  border-radius: 10px;
+  transition: transform 0.12s ease, box-shadow 0.12s ease;
+}
+.stButton > button:hover, .stDownloadButton > button:hover { transform: translateY(-1px); }
+.stButton > button[kind="primary"] {
+  background: linear-gradient(135deg, var(--accent), #4F46E5);
+  border: none;
+  box-shadow: 0 6px 18px rgba(99, 102, 241, 0.35);
+}
+
+/* --- 2. Streamlit Shell: Main Container Spacing --- */
+[data-testid="stMainBlockContainer"] {
+  padding-top: calc(var(--nav-h) + var(--page-gap)) !important;
+  padding-bottom: 0 !important;
+}
+
+/* --- 2. Streamlit Shell: Chat (only the message list scrolls) --- */
+/* On the assistant page the page itself never scrolls; the navbar, the chat
+   box and the input bar always fit inside the viewport. */
+section.stMain:has(.st-key-chat_container) {
+  overflow: hidden !important;
+}
+/* Streamlit sizes the wrapper with `flex: 0 0 <height>px`; flex-basis beats
+   `height`, so the wrapper's basis is reset and the height is set on both. */
+[data-testid="stLayoutWrapper"]:has(> .st-key-chat_container) {
+  flex: 0 0 auto !important;
+}
+[data-testid="stLayoutWrapper"]:has(> .st-key-chat_container),
+.st-key-chat_container {
+  height: calc(100dvh - var(--nav-h) - var(--bottom-bar-h) - 2 * var(--page-gap) - var(--flow-gap)) !important;
+  max-height: none !important;
+  min-height: 0 !important;
+}
+.st-key-chat_container {
+  overflow-y: auto !important;
+  overflow-x: hidden !important;
+  padding-right: 0.5rem;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.16) transparent;
+}
+.st-key-chat_container::-webkit-scrollbar { width: 8px; }
+.st-key-chat_container::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.16); border-radius: 8px; }
+.st-key-chat_container::-webkit-scrollbar-thumb:hover { background: rgba(255, 255, 255, 0.28); }
+
+[data-testid="stChatMessage"] {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 0.85rem 1rem;
+  margin-bottom: 0.6rem;
+}
+
+
+[data-testid="stBottom"] {
+  position: sticky !important;
+  bottom: 0 !important;
+  margin-top: auto !important;
+  background: transparent !important;
+  border: none !important;
+  padding-top: 0 !important;
+  padding-bottom: 0 !important;
+  z-index: 100 !important;
+}
+
+/* Bar anatomy: 8px top + input 58px + 8px gap + disclaimer ~14px + 16px bottom = --bottom-bar-h.
+   Padding lives on the direct child; it used to be zeroed here, which pinned the
+   disclaimer to the bottom edge of the viewport. */
+[data-testid="stBottom"] > div {
+  background: transparent !important;
+  border: none !important;
+  padding-top: 0.5rem !important;
+  padding-bottom: 1rem !important;
+}
+
+[data-testid="stBottomBlockContainer"] {
+  padding-top: 0 !important;
+  padding-bottom: 0 !important;
+}
+[data-testid="stBottom"] [data-testid="stVerticalBlock"] { gap: 0.5rem !important; }
+
+[data-testid="stChatInput"] {
+  border: none !important;
+  background: transparent !important;
+  box-shadow: none !important;
+  padding: 0 !important;
+  margin-top: 0 !important;
+  margin-bottom: 0 !important;
+}
+[data-testid="stChatInput"] > div {
+  border-radius: 24px !important;
+  border: 1px solid var(--border-strong) !important;
+  background: var(--surface-2) !important;
+  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.4) !important;
+  transition: box-shadow 0.2s ease, border-color 0.2s ease !important;
+}
+[data-testid="stChatInput"] > div:focus-within {
+  border-color: var(--accent) !important;
+  box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.3), 0 8px 30px rgba(0, 0, 0, 0.4) !important;
+}
+
+/* st.markdown wraps text with margin-bottom:-1rem, which collapses this element to 0px
+   and lets the text spill into the bar's bottom padding. */
+[data-testid="stBottom"] [data-testid="stMarkdownContainer"] { margin-bottom: 0 !important; }
+.disclaimer { text-align: center; font-size: 0.72rem; line-height: 1.2; color: var(--faint); margin: 0; }
+
+/* --- 3. Custom Components: Headers, Hero & Suggestions --- */
+.page-title { font-size: 1.35rem; font-weight: 700; letter-spacing: -0.02em; margin: 0.2rem 0 0.1rem; color: var(--text); }
+.page-sub { color: var(--muted); font-size: 0.88rem; margin-bottom: 1rem; }
+.section-label { font-size: 0.7rem; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: var(--faint); margin: 1rem 0 0.4rem; }
+
+.hero { text-align: center; padding: 2.2rem 1rem 1.4rem; }
+.hero-badge {
+  display: inline-flex; gap: 0.4rem; align-items: center; padding: 4px 12px; border-radius: 999px;
+  font-size: 0.74rem; font-weight: 600; color: var(--accent-2);
+  background: rgba(56, 189, 248, 0.10); border: 1px solid rgba(56, 189, 248, 0.25); margin-bottom: 0.9rem;
+}
+.hero-title {
+  font-size: 2.5rem; font-weight: 700; letter-spacing: -0.03em; margin: 0 0 0.5rem;
+  background: linear-gradient(135deg, #818CF8 0%, #38BDF8 55%, #34D399 100%);
+  -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+}
+.hero-sub { color: var(--muted); max-width: 620px; margin: 0 auto; line-height: 1.55; font-size: 1rem; }
+
+.st-key-suggestions .stButton > button {
+  height: 100%; min-height: 76px; text-align: left; justify-content: flex-start; white-space: normal;
+  padding: 0.85rem 1rem; border-radius: var(--radius); background: var(--surface); border: 1px solid var(--border);
+  transition: transform 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease;
+}
+.st-key-suggestions .stButton > button:hover {
+  transform: translateY(-2px); border-color: rgba(99, 102, 241, 0.55); box-shadow: 0 10px 24px rgba(0, 0, 0, 0.35);
+}
+

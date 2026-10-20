@@ -1,0 +1,173 @@
+/* ==========================================================================
+   Meeting Intelligence — Production Stylesheet
+   Architecture:
+     1. Tokens & Base (:root, fonts, app background)
+     2. Streamlit Shell Overrides (Navbar, Sidebar, Tabs, Metrics, Chat Input)
+     3. Custom Components (Hero, Suggestions, Citations, Turns, Steps)
+   ========================================================================== */
+
+/* --- 1. Tokens & Base --- */
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
+
+:root {
+  --bg: #0B0F19;
+  --surface: #111827;
+  --surface-2: #1A2332;
+  --border: rgba(255, 255, 255, 0.08);
+  --border-strong: rgba(255, 255, 255, 0.16);
+  --text: #F1F5F9;
+  --muted: #94A3B8;
+  --faint: #64748B;
+  --accent: #6366F1;
+  --accent-2: #38BDF8;
+  --good: #10B981;
+  --warn: #F59E0B;
+  --bad: #EF4444;
+  --radius: 14px;
+
+  /* Layout metrics: the chat height is derived from these, so tune here only */
+  --nav-h: 60px;          /* fixed navbar */
+  --page-gap: 1rem;       /* breathing room between navbar / chat / input bar */
+  --bottom-bar-h: 104px;  /* pinned chat input + disclaimer (see Bottom Input) */
+  --flow-gap: 1rem;       /* Streamlit's default gap between stacked elements */
+}
+
+html, body, [class*="css"] { font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif; }
+code, .mono { font-family: 'JetBrains Mono', monospace; }
+
+.stApp {
+  background:
+    radial-gradient(900px 400px at 85% -10%, rgba(99, 102, 241, 0.14), transparent 60%),
+    radial-gradient(700px 360px at 0% 0%, rgba(56, 189, 248, 0.08), transparent 60%),
+    var(--bg);
+}
+
+/* --- 2. Streamlit Shell: Fixed Top Navbar --- */
+header[data-testid="stHeader"] {
+  position: fixed !important;
+  top: 0 !important;
+  left: 0 !important;
+  right: 0 !important;
+  height: 60px !important;
+  background: rgba(11, 15, 25, 0.85) !important;
+  backdrop-filter: blur(16px) !important;
+  -webkit-backdrop-filter: blur(16px) !important;
+  border-bottom: 1px solid var(--border) !important;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.35) !important;
+  z-index: 999990 !important;
+  display: block !important;
+  padding: 0 !important;
+}
+
+/* Slot 1: Brand Logo on Header */
+header[data-testid="stHeader"]::before {
+  content: "🎙️  Meeting Intelligence";
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+  font-weight: 700;
+  font-size: 1.05rem;
+  letter-spacing: -0.015em;
+  color: var(--text);
+  display: inline-flex;
+  align-items: center;
+  position: absolute !important;
+  left: 1.5rem !important;
+  top: 50% !important;
+  transform: translateY(-50%) !important;
+  z-index: 30 !important;
+}
+
+/* Toolbar & 3-Slot Flex Layout */
+header[data-testid="stHeader"] [data-testid="stToolbar"] {
+  width: 100% !important;
+  height: 100% !important;
+  display: flex !important;
+  align-items: center !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  background: transparent !important;
+}
+
+header[data-testid="stHeader"] [data-testid="stToolbar"] > div {
+  width: 100% !important;
+  height: 100% !important;
+  display: flex !important;
+  flex-direction: row !important;
+  align-items: center !important;
+  justify-content: space-between !important;
+  padding: 0 1.5rem !important;
+  box-sizing: border-box !important;
+}
+
+/* Slot 1 Anchor (240px spacer for logo) */
+header[data-testid="stHeader"] [data-testid="stToolbar"] > div > div:first-child {
+  flex: 0 0 240px !important;
+  width: 240px !important;
+}
+
+/* Slot 2 Anchor (Center navigation cluster) */
+header[data-testid="stHeader"] [data-testid="stToolbar"] > div > div:nth-child(2),
+header[data-testid="stHeader"] [data-testid="stToolbar"] div:has(> div > a) {
+  flex: 1 1 auto !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  gap: 8px !important;
+  margin: 0 !important;
+}
+
+header[data-testid="stHeader"] [data-testid="stToolbar"] > div > div:nth-child(2) > div,
+header[data-testid="stHeader"] [data-testid="stToolbar"] div:has(> a) {
+  flex: 0 0 auto !important;
+  display: inline-flex !important;
+}
+
+/* Slot 3 Anchor (240px spacer for Deploy & Menu buttons) */
+header[data-testid="stHeader"] [data-testid="stToolbar"] > div > div:last-child {
+  flex: 0 0 240px !important;
+  width: 240px !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: flex-end !important;
+  gap: 6px !important;
+}
+
+/* Nav Link Buttons & Active State */
+header[data-testid="stHeader"] a[role="tab"],
+header[data-testid="stHeader"] a {
+  display: inline-flex !important;
+  align-items: center !important;
+  gap: 6px !important;
+  padding: 6px 14px !important;
+  height: 36px !important;
+  border-radius: 10px !important;
+  font-size: 0.84rem !important;
+  font-weight: 500 !important;
+  color: var(--muted) !important;
+  text-decoration: none !important;
+  background: rgba(255, 255, 255, 0.04) !important;
+  border: 1px solid var(--border) !important;
+  transition: all 0.15s ease !important;
+}
+
+header[data-testid="stHeader"] a[role="tab"]:hover,
+header[data-testid="stHeader"] a:hover {
+  color: var(--text) !important;
+  background: rgba(255, 255, 255, 0.09) !important;
+  border-color: var(--border-strong) !important;
+  transform: translateY(-1px) !important;
+}
+
+header[data-testid="stHeader"] a[role="tab"][aria-selected="true"],
+header[data-testid="stHeader"] a[aria-current="page"] {
+  color: #FFFFFF !important;
+  background: linear-gradient(135deg, rgba(99, 102, 241, 0.35), rgba(56, 189, 248, 0.25)) !important;
+  border-color: rgba(99, 102, 241, 0.6) !important;
+  font-weight: 600 !important;
+  box-shadow: 0 2px 10px rgba(99, 102, 241, 0.3) !important;
+}
+
+header[data-testid="stHeader"] button[aria-label="More tabs"],
+header[data-testid="stHeader"] [data-baseweb="tab-highlight"] + button {
+  display: none !important;
+}
+

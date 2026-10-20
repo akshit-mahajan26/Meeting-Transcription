@@ -1,19 +1,19 @@
 """Global styling injection for Meeting Intelligence.
 
-All production CSS lives in `ui/style.css` for proper syntax highlighting,
-IDE linting, and clean frontend developer maintenance.
+Production CSS lives in `ui/css/*.css` (split to stay under the 400-line file limit),
+concatenated in filename order.
 """
 
 from pathlib import Path
 
 import streamlit as st
 
-_CSS_PATH = Path(__file__).resolve().parent / "style.css"
+_CSS_DIR = Path(__file__).resolve().parent / "css"
 
 
 def _load_css() -> str:
-    """Read stylesheet content from disk."""
-    return _CSS_PATH.read_text(encoding="utf-8")
+    """Read and concatenate stylesheet parts from disk, in filename order."""
+    return "\n".join(p.read_text(encoding="utf-8") for p in sorted(_CSS_DIR.glob("*.css")))
 
 
 # Module-level alias for backward compatibility

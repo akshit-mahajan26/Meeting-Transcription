@@ -60,37 +60,69 @@ def render_citations(citations: list[dict[str, Any]]) -> None:
 
     chips = '<div class="sources"><span class="sources-label">Sources:</span>'
     for i, c in enumerate(citations, 1):
-        t = format_timestamp(c.get("start_time"))
         label = c.get("meeting_title") or "Meeting"
-        tip = f"{label} at {t}"
+        spk = c.get("speaker") or "Unknown"
+        start_t = format_timestamp(c.get("start_time"))
+        end_t = format_timestamp(c.get("end_time"))
+        span = f"{start_t} – {end_t}" if c.get("end_time") is not None else start_t
+        quote = c.get("exact_raw_text") or c.get("topic_context") or "Referenced in transcript"
+
+        popover_html = (
+            f'<div class="chip-popover">'
+            f'  <div class="popover-top">'
+            f'    <span class="popover-badge">Source [{i}]</span>'
+            f'    <span class="popover-time">⏱️ {span}</span>'
+            f'  </div>'
+            f'  <div class="popover-title">{esc(label)}</div>'
+            f'  <div class="popover-speaker">👤 {esc(spk)}</div>'
+            f'  <div class="popover-quote">“{esc(quote)}”</div>'
+            f'  <div class="popover-foot"><span>✓ Verified provenance</span></div>'
+            f'</div>'
+        )
+
         chips += (
-            f'<span class="chip" title="{esc(tip)}"><span class="chip-num">[{i}]</span>'
-            f"{esc(label)}</span></span>"
-            # f"{esc(label)}<span class=\"chip-time\">{t}</span></span>"
+            f'<span class="chip">'
+            f'<span class="chip-num">[{i}]</span>'
+            f'<span class="chip-label">{esc(label)}</span>'
+            f'{popover_html}'
+            f'</span>'
         )
     st.markdown(chips + "</div>", unsafe_allow_html=True)
+    _inject_popover_script()
 
-    quoted = [c for c in citations if c.get("exact_raw_text")]
-    if not quoted:
-        return
-    with st.expander(f"Inspect source excerpts ({len(quoted)})", icon=":material/format_quote:"):
-        for i, c in enumerate(quoted, 1):
-            span = f"{format_timestamp(c.get('start_time'))} – {format_timestamp(c.get('end_time'))}"
-            st.markdown(
-                f"""
-                <div class="cite">
-                  <div class="cite-head">
-                    <div><span class="chip-num">[{i}]</span>
-                      <span class="cite-speaker">{esc(c.get("meeting_title") or "Meeting")}</span>
-                      <span class="cite-ctx"> · {esc(c.get("speaker") or "Unknown")}</span></div>
-                    <span class="cite-time">{span}</span>
-                  </div>
-                  <div class="cite-quote">“{esc(c.get("exact_raw_text"))}”</div>
-                  <div class="cite-foot"><span style="color:var(--good)">Verified provenance</span></div>
-                </div>
-                """,
-                unsafe_allow_html=True,
-            )
+
+def _inject_popover_script() -> None:
+    """Injects a client-side boundary detector so popovers flip alignment if near container edge."""
+    js = """
+    <script>
+    (function() {
+      try {
+        const rootDoc = (window.parent && window.parent.document) ? window.parent.document : document;
+        if (rootDoc.__popover_align_attached) return;
+        rootDoc.__popover_align_attached = true;
+
+        rootDoc.addEventListener('mouseover', function(e) {
+          const chip = e.target.closest('.chip');
+          if (!chip) return;
+          const popover = chip.querySelector('.chip-popover');
+          if (!popover) return;
+
+          const chipRect = chip.getBoundingClientRect();
+          const chatBox = chip.closest('.st-key-chat_container') || chip.closest('[data-testid="stChatMessage"]') || rootDoc.body;
+          const boxRect = chatBox.getBoundingClientRect();
+
+          // If less than 320px of room to the right of the chip, flip alignment to the right
+          if (boxRect.right - chipRect.left < 320) {
+            popover.classList.add('popover-align-right');
+          } else {
+            popover.classList.remove('popover-align-right');
+          }
+        });
+      } catch(e) {}
+    })();
+    </script>
+    """
+    st.iframe(js, height=1)
 
 
 def render_assistant_message(msg: dict[str, Any]) -> None:
