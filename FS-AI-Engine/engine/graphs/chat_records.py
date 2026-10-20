@@ -109,7 +109,7 @@ def build_catalog_records(
     general_meeting_query = mentions("meeting") and mentions(
         "all", "list", "how many", "which", "available", "recorded", "what meetings"
     )
-    if available_meetings and (force_all or general_meeting_query) and not scoped_to_meeting and not has_speakers:
+    if available_meetings and (force_all or (general_meeting_query and not scoped_to_meeting and not has_speakers)):
         rows = available_meetings[:_MAX_CATALOG_MEETING_ROWS]
         mtg_lines = "\n".join(
             f"- **{m['title']}** (Project: {m.get('project_id') or 'Unassigned'}, "

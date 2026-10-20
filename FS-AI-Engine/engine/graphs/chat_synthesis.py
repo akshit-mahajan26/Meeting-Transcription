@@ -170,16 +170,17 @@ async def llm_synthesis_node(state: ChatState) -> dict[str, Any]:
         available_projects=available_projects,
         available_meetings=available_meetings,
         available_speakers=available_speakers,
-        scoped_to_meeting=bool(state.get("meeting_id")),
+        scoped_to_meeting=bool(state.get("meeting_id")) and not is_catalog and not state.get("meeting_scope_inferred"),
         project_id=state.get("project_id"),
         has_speakers=bool(resolved_speakers),
     )
 
-    # Meeting date/time: for the scoped meeting, or the meetings behind the retrieved excerpts
-    if state.get("meeting_id"):
-        detail_ids = [state["meeting_id"]]
+    # Meeting date/time: for catalog queries, ordinal queries, or inferred scoping, include all available meetings
+    # so the synthesis model has the complete chronological timeline; for explicit single-meeting content Q&A, scope to that meeting.
+    if is_catalog or state.get("meeting_scope_inferred") or not state.get("meeting_id"):
+        detail_ids = [m["id"] for m in available_meetings]
     else:
-        detail_ids = list(state.get("date_meeting_ids") or []) + [c.get("meeting_id") for c in retrieved_chunks]
+        detail_ids = [state["meeting_id"]]
     meeting_details = build_meeting_details(available_meetings, [i for i in detail_ids if i])
     if meeting_details:
         extra_record_context += meeting_details
