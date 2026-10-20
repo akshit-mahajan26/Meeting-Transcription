@@ -58,14 +58,15 @@ def render_citations(citations: list[dict[str, Any]]) -> None:
     if not citations:
         return
 
-    chips = '<div class="sources"><span class="sources-label">Sources</span>'
+    chips = '<div class="sources"><span class="sources-label">Sources:</span>'
     for i, c in enumerate(citations, 1):
         t = format_timestamp(c.get("start_time"))
         label = c.get("meeting_title") or "Meeting"
         tip = f"{label} at {t}"
         chips += (
             f'<span class="chip" title="{esc(tip)}"><span class="chip-num">[{i}]</span>'
-            f"{esc(label)}<span class=\"chip-time\">{t}</span></span>"
+            f"{esc(label)}</span></span>"
+            # f"{esc(label)}<span class=\"chip-time\">{t}</span></span>"
         )
     st.markdown(chips + "</div>", unsafe_allow_html=True)
 
@@ -93,11 +94,11 @@ def render_citations(citations: list[dict[str, Any]]) -> None:
 
 
 def render_assistant_message(msg: dict[str, Any]) -> None:
-    pills = message_pills(msg)
-    if pills:
-        st.markdown(pills, unsafe_allow_html=True)
-    if msg.get("routing_reasoning"):
-        st.caption(f"DB scope: `{msg['routing_reasoning']}`", help="How the router scoped this query")
+    # pills = message_pills(msg)
+    # if pills:
+    #     st.markdown(pills, unsafe_allow_html=True)
+    # if msg.get("routing_reasoning"):
+    #     st.caption(f"DB scope: `{msg['routing_reasoning']}`", help="How the router scoped this query")
     st.markdown(msg.get("content", ""))
     render_citations(msg.get("citations") or [])
 
