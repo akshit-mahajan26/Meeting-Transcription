@@ -38,8 +38,8 @@ The Meeting Transcript Intelligence Platform turns recorded meetings into a **kn
 
 ### Trade-offs and Cons
 
-- **Cost:** a content question uses two LLM calls (query rewrite, answer) and one embedding call. Negligible now; the lines to watch at scale.
-- **Latency:** about 6.4 s per answer on average in the last benchmark run (2026-10-08).
+- **Cost:** a content question uses two LLM calls (query rewrite, answer) and one embedding call. The answer prompt now always carries the last 5 exchanges and, for inventory questions, the full meeting list. Negligible now; the lines to watch at scale.
+- **Latency:** about 6.4 s per answer on average in the last benchmark run (2026-10-08), which predates the always-on history and the larger rewrite prompt; re-measure.
 - **Transcript quality:** wrong speaker labels or mis-heard words in Fireflies carry straight into answers.
 - **Heuristic retrieval:** ranking uses hand-tuned weights, not a trained reranker, and scans all in-scope turns (no SQL top-k), so it will not scale as-is.
 - **Accuracy not yet measured:** the 50-question benchmark returned an answer for 49, which measures availability, not correctness. A manual read shows some wrong answers.
@@ -169,7 +169,7 @@ flowchart TD
 
 A **LangGraph** state graph with three exits: normal retrieval, a database-only shortcut for pure inventory questions, and a fallback that never calls the answer LLM.
 
-**Layer 1, Understand the question.** One small LLM call fixes typos, makes follow-ups standalone and extracts a date range. The system then resolves the project, people (full name or fuzzy match) and meeting (UI selection, date, ID, "last meeting", or title match) using only this account's records, and classifies the intent:
+**Layer 1, Understand the question.** One small LLM call fixes typos, makes follow-ups standalone and returns structured fields: date range, speaker, intent, `time_scope` (`latest` or `earliest`), `cross_meeting` (search all meetings, no single-meeting lock) and `meeting_id`. For `meeting_id` the model sees the account's 50 most recent meetings (id, title, date, oldest to newest), so titles and ordinal references ("the second call") resolve there, and the returned ID is validated against the account's records. The system then resolves the project, people (full name or fuzzy match) and meeting using only this account's records, in this order: UI selection, the model's `meeting_id`, date, title or ID match in the query text, then `time_scope` (newest or oldest meeting, also per participant). It classifies the intent:
 - **Catalog:** counts and lists of projects, meetings, participants.
 - **Participant involvement:** which meetings a person attended.
 - **Content Q&A:** everything else, answered by retrieval.
@@ -178,7 +178,7 @@ Dates are handled in code: one meeting on a date scopes to it, several are searc
 
 **Layer 2, Retrieve.** The question is embedded and one SQL query pulls this account's turns, filtered by meeting, date, project and speaker. Each turn is scored: 3 x vector similarity, + 1.5 per query keyword found, + 3.5 if the speaker is the person named, - 2 for filler such as "ok". Across several meetings, selection forces diversity so one meeting cannot dominate. If a speaker filter returns nothing, the search repeats without it.
 
-**Layer 3, Synthesize.** The prompt holds numbered excerpts (meeting, held-on date, speaker, time, quote), database records with counts already computed in code, recent chat history and today's date. Rules: 2 to 5 sentences, use only the supplied context and say so when information is missing, never show internal IDs, and end with a `SOURCES` line.
+**Layer 3, Synthesize.** The prompt holds numbered excerpts (meeting, held-on date, speaker, time, quote), database records with counts already computed in code, the recent chat history (always included, last 5 question and answer pairs) and today's date. For inventory questions, inferred scope or no scope, the records list every available meeting in date order, so "first" and "last" are grounded in the full timeline; an explicit single-meeting question gets only that meeting. Inventory questions are never treated as locked to the selected meeting. Rules: 2 to 5 sentences, use only the supplied context and say so when information is missing, never show internal IDs, and end with a `SOURCES` line.
 
 **Layer 4, Cite.** Because the model reports which excerpts it used, exactly those are cited. Greetings and database-only answers show none. With one meeting in scope the user gets turn-level cards; otherwise one card per meeting.
 
@@ -264,8 +264,8 @@ sequenceDiagram
     FE->>BE: POST /api/v1/query with last 5 Q and A as history
     BE->>BE: Verify JWT, resolve project scope, set user_id from the token
     BE->>EN: POST /engine/query + X-Internal-Api-Key + user_id
-    EN->>GM: rewrite_query - fix typos, standalone question, date range
-    GM-->>EN: JSON query, date_from, date_to
+    EN->>GM: rewrite_query - fix typos, standalone question, date range, plus known speakers and recent meetings
+    GM-->>EN: JSON query, dates, speaker, intent, time_scope, meeting_id, cross_meeting
     EN->>DB: Account's meetings, projects, speakers
     DB-->>EN: records
     EN->>EN: Resolve project, speakers, meeting, date. Classify intent
@@ -370,8 +370,8 @@ Semantic search narrowed to a person and meeting.
 > 📷 *paste screenshot here*
 
 #### Relative time and dates
-"Last meeting" resolves to the newest meeting; a date with no meeting gets a clear answer without calling the LLM.
-**Queries:** `What happened in the latest call?` / `What was discussed on June 12?` / `What happened on June 13?`
+"Last meeting" resolves to the newest meeting and "first meeting" to the oldest (also per participant); a date with no meeting gets a clear answer without calling the LLM.
+**Queries:** `What happened in the latest call?` / `What was discussed in the first meeting?` / `What was discussed on June 12?` / `What happened on June 13?`
 > 📷 *paste screenshot here*
 
 #### Follow-up questions
@@ -394,12 +394,12 @@ Every content answer carries citation cards (speaker, time, snippet) for the exc
 
 | Area | State | Detail |
 | --- | --- | --- |
-| Auth, isolation, ingestion, chat, citations | **Done** | Engine has automated tests (isolation, inventory routing, history, dates) |
+| Auth, isolation, ingestion, chat, citations | **Done** | Automated tests cover isolation, inventory routing, history and dates |
 | Topics and summary tiers | **Partial** | Built but not used by retrieval; decisions, commitments, blockers are computed then dropped; only the overview text is saved |
 | Retrieval quality | **Partial** | Hand-tuned scoring, no reranker, no SQL top-k; full-text index unused |
 | Evaluation | **Partial** | Harness runs; no correctness metrics yet |
 | Raw audio, webhooks, job status | **Partial** | Audio only forwarded to Fireflies; no webhooks or job-status endpoint. Failed ingestions are now recorded as `FAILED` meetings with a reason, but there is no retry queue |
-| Deployment and tests | **Not started / Partial** | No docker-compose; no backend or frontend tests |
+| Deployment and tests | **Partial** | Unit and integration tests exist in all three services (engine: isolation, catalog routing, temporal resolution, history; backend: API and auth isolation; frontend: auth and pages). No docker-compose, no end-to-end tests or CI |
 
 ### 6.3 Next Steps, in Priority Order
 
@@ -407,10 +407,10 @@ Every content answer carries citation cards (speaker, time, snippet) for the exc
 2. **Upgrade retrieval:** top-k in SQL, hybrid vector plus full-text search, reranker.
 3. **Use topics and summaries;** persist and expose decisions and action items.
 4. **Webhook-driven ingestion** with job status; auto-ingest uploaded audio.
-5. **Production readiness:** docker-compose, backend and frontend tests, secrets and CORS hardening.
+5. **Production readiness:** docker-compose, end-to-end tests and CI, secrets and CORS hardening.
 
 > No effort estimates are included yet; they can be added per step once priorities are agreed.
 
 ---
 
-*Document version: 1.2 | Date: 2026-10-19*
+*Document version: 1.3 | Date: 2026-10-20*
