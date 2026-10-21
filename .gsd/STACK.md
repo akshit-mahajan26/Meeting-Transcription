@@ -78,9 +78,12 @@ Testing: `pytest`, `pytest-asyncio`. Tests currently exist for FS-AI-Engine only
 | `FIREFLIES_API_KEY`, `FIREFLIES_API_URL` | backend | Fireflies access |
 | `CORS_ORIGINS` | backend | Allowed origins (default `*`) |
 | `ALLOW_SIGNUP` | backend | `false` blocks new account registration (default `true`) |
+| `BOUNDARY_SIMILARITY_THRESHOLD` | engine | Topic boundary cutoff for segmentation (default 0.55) |
+| `MAX_TURN_TOKENS` | engine | Split a speaker's turn after this many words (default 0 = never) |
+| `CHUNK_OVERLAP_SENTENCES` | engine | Sentences repeated at the start of the next turn after such a split (default 0) |
 | `RETRIEVAL_CANDIDATE_LIMIT` | engine | Max similar turns fetched per vector search (default 1000, `0` = no cap) |
 | `GEMINI_API_KEY` (alias `GOOGLE_API_KEY`), `GEMINI_BASE_URL` | engine | LLM + embeddings |
 | `LLM_MODEL_NAME`, `EMBEDDING_MODEL`, `EMBEDDING_DIMENSIONS` | engine | Model selection (dims must match the `vector(1536)` column) |
 | `FASTAPI_BACKEND_URL` | frontend | Backend base URL |
 
-Segmentation tuning (defaults in `engine/core/config.py`): `topic_similarity_threshold=0.55`, `min_turns_per_segment=2`, `max_turns_per_segment=10`.
+Segmentation tuning (defaults in `engine/core/config.py`): `topic_similarity_threshold=0.55` (env `BOUNDARY_SIMILARITY_THRESHOLD`), `min_turns_per_segment=2`, `max_turns_per_segment=10`.

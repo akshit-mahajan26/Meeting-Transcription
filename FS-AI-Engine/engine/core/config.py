@@ -74,8 +74,24 @@ class Settings(BaseSettings):
     )
 
     # Segmentation Parameters
-    topic_similarity_threshold: float = Field(default=0.55)
+    topic_similarity_threshold: float = Field(
+        default=0.55,
+        validation_alias=AliasChoices("BOUNDARY_SIMILARITY_THRESHOLD", "TOPIC_SIMILARITY_THRESHOLD", "topic_similarity_threshold"),
+        description="Topic boundary cutoff: a similarity below this between neighbouring turns starts a new segment",
+    )
     min_turns_per_segment: int = Field(default=2)
+    max_turn_tokens: int = Field(
+        default=0,
+        ge=0,
+        validation_alias=AliasChoices("MAX_TURN_TOKENS", "max_turn_tokens"),
+        description="Split a speaker's turn once it passes this many words (tokens approximated by words); 0 = never split",
+    )
+    chunk_overlap_sentences: int = Field(
+        default=0,
+        ge=0,
+        validation_alias=AliasChoices("CHUNK_OVERLAP_SENTENCES", "chunk_overlap_sentences"),
+        description="Sentences repeated at the start of the next turn when a long turn is split by max_turn_tokens",
+    )
     max_turns_per_segment: int = Field(default=10)
 
     @property

@@ -1,5 +1,6 @@
 import re
 
+from ..core.config import Settings, get_settings
 from ..models.schemas import (
     NormalizationResult,
     RawSentence,
@@ -18,6 +19,16 @@ class SpeakerNormalizer:
     3. Computes accurate turn boundaries (start_time, end_time, duration).
     4. Enforces strict deterministic turn IDs conforming to mtg_<id>_turn_<NNN>.
     """
+
+    def __init__(self, settings: Settings | None = None):
+        settings = settings or get_settings()
+        self.max_turn_tokens = settings.max_turn_tokens
+        self.overlap_sentences = settings.chunk_overlap_sentences
+
+    @staticmethod
+    def _token_count(sentences: list[RawSentence]) -> int:
+        """Whitespace-delimited words, used as the token estimate for the turn size cap."""
+        return sum(len(s.text.split()) for s in sentences)
 
     @staticmethod
     def _sanitize_id(identifier: str) -> str:
@@ -90,7 +101,13 @@ class SpeakerNormalizer:
                 or current_speaker_name.lower() == prev_speaker_name.lower()
             )
 
-            if same_speaker:
+            too_long = (
+                same_speaker
+                and self.max_turn_tokens > 0
+                and self._token_count(current_sentences) + len(sentence.text.split()) > self.max_turn_tokens
+            )
+
+            if same_speaker and not too_long:
                 # Merge into existing turn accumulator
                 current_sentences.append(sentence)
             else:
@@ -103,8 +120,10 @@ class SpeakerNormalizer:
                 normalized_turns.append(turn)
                 turn_counter += 1
 
-                # Start new turn
-                current_sentences = [sentence]
+                # Start new turn; a split of one speaker's long turn repeats the last few sentences for context
+                keep = min(self.overlap_sentences, len(current_sentences) - 1) if too_long else 0
+                overlap = current_sentences[-keep:] if keep > 0 else []
+                current_sentences = [*overlap, sentence]
 
         # Finalize trailing turn if any
         if current_sentences:
