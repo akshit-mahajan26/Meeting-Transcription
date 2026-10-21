@@ -38,8 +38,8 @@ The Meeting Transcript Intelligence Platform turns recorded meetings into a **kn
 
 ### Trade-offs and Cons
 
-- **Cost:** a content question uses two LLM calls (query rewrite, answer) and one embedding call. The answer prompt now always carries the last 5 exchanges and, for inventory questions, the full meeting list. Negligible now; the lines to watch at scale.
-- **Latency:** about 6.4 s per answer on average in the last benchmark run (2026-10-08), which predates the always-on history and the larger rewrite prompt; re-measure.
+- **Cost:** a content question uses three LLM calls (query rewrite, query analysis, answer) and one embedding call. The answer prompt now always carries the last 5 exchanges and, for inventory questions, the full meeting list. Negligible now; the lines to watch at scale.
+- **Latency:** about 6.4 s per answer on average in the last benchmark run (2026-10-08), which predates the always-on history and the extra analysis call; re-measure.
 - **Transcript quality:** wrong speaker labels or mis-heard words in Fireflies carry straight into answers.
 - **Heuristic retrieval:** ranking uses hand-tuned weights, not a trained reranker, and scans all in-scope turns (no SQL top-k), so it will not scale as-is.
 - **Accuracy not yet measured:** the 50-question benchmark returned an answer for 49, which measures availability, not correctness. A manual read shows some wrong answers.
@@ -65,9 +65,11 @@ The platform prefers an honest "I could not find that" over a made-up answer.
 ```mermaid
 %%{init: {"flowchart": {"htmlLabels": false, "padding": 16}}}%%
 flowchart TD
-    A([User question]) --> B{Rewrite call OK?}
-    B -- No --> B2[Use the original question]
-    B -- Yes --> C
+    A([User question]) --> B{Rewrite and analysis calls OK?}
+    B -- No --> B2[Use the original question, full retrieval]
+    B -- Yes --> S{Greeting or thanks?}
+    S -- Yes --> X0([Short friendly reply - no search, no citations])
+    S -- No --> C
     B2 --> C{Meeting held on the requested date?}
     C -- No --> X1([Message: no meetings recorded for that date])
     C -- Yes --> D{Pure inventory question?}
@@ -84,7 +86,7 @@ At ingestion, an unsupported link returns 400, a meeting ID owned by another acc
 
 ### 3.4 What Has Been Achieved
 
-Account isolation, link-based ingestion with safe re-ingestion, inventory answers (counts and lists), participant questions, content questions (facts, decisions, commitments, summaries), meeting and date awareness, follow-up questions, cross-meeting questions, source citations, refusing to guess, and a 50-question evaluation harness. Example queries for each are in section 6.1.
+Account isolation, link-based ingestion with safe re-ingestion, inventory answers (counts and lists), participant questions, content questions (facts, decisions, commitments, summaries), meeting and date awareness, follow-up questions, cross-meeting questions, source citations, refusing to guess, and a 50-question evaluation harness. Example queries for each are in section 6.1. Greetings and thanks get a direct reply without a search.
 
 ---
 
@@ -154,7 +156,8 @@ If an LLM is unavailable, topic headings and the overview fall back to heuristic
 ```mermaid
 %%{init: {"flowchart": {"htmlLabels": false, "padding": 16}}}%%
 flowchart TD
-    START(["POST /api/v1/query"]) --> EF["extract_filters<br/>rewrite query, load account records,<br/>resolve project / speakers / meeting / date, classify intent"]
+    START(["POST /api/v1/query"]) --> EF["extract_filters<br/>rewrite query, load account records,<br/>analyse query: intent / project / speaker / meeting / date"]
+    EF -- "greeting or pleasantry" --> SM["smalltalk<br/>short reply, no search, no citations"]
     EF -- "no meeting held on requested date" --> FB["fallback<br/>'No meetings are recorded for DATE'"]
     EF -- "pure inventory question<br/>skip_retrieval = true" --> LS
     EF -- "everything else" --> EQ["embed_query<br/>1536-d vector of the cleaned question"]
@@ -165,11 +168,17 @@ flowchart TD
     FC --> END1(["answer + citations + routing_mode"])
     FB --> END2(["answer, no citations"])
     FB2 --> END2
+    SM --> END2
 ```
 
-A **LangGraph** state graph with three exits: normal retrieval, a database-only shortcut for pure inventory questions, and a fallback that never calls the answer LLM.
+A **LangGraph** state graph with four exits: normal retrieval, a database-only shortcut for pure inventory questions, a small-talk reply for greetings, and a fallback that never calls the answer LLM.
 
-**Layer 1, Understand the question.** One small LLM call fixes typos, makes follow-ups standalone and returns structured fields: date range, speaker, intent, `time_scope` (`latest` or `earliest`), `cross_meeting` (search all meetings, no single-meeting lock) and `meeting_id`. For `meeting_id` the model sees the account's 50 most recent meetings (id, title, date, oldest to newest), so titles and ordinal references ("the second call") resolve there, and the returned ID is validated against the account's records. The system then resolves the project, people (full name or fuzzy match) and meeting using only this account's records, in this order: UI selection, the model's `meeting_id`, date, title or ID match in the query text, then `time_scope` (newest or oldest meeting, also per participant). It classifies the intent:
+**Layer 1, Understand the question.** Two small LLM calls, each with its own prompt and no regex or keyword rules in code:
+1. **Rewrite** (`chat_rewrite.py`) only fixes typos and makes follow-ups standalone, using the user's earlier messages (never the assistant's answers). Greetings are returned unchanged.
+2. **Analysis** (`chat_analysis.py`) holds every routing rule in one system prompt and returns: `intent`, `speaker`, `meeting_id`, `project_id`, `cross_meeting` (search all meetings, no single-meeting lock), `time_scope` (`latest` or `earliest`), date range, `catalog_entities` (which listings are needed) and `needs_retrieval`. It sees the account's participants, projects and 50 most recent meetings (id, title, date, oldest to newest), so titles and ordinal references ("the second call") resolve there. Every returned name or ID is validated against the account's records and dropped if unknown. If the call fails, the default is a content question with full retrieval.
+
+Meeting scope is applied in this order: UI selection, the model's `meeting_id`, date, then `time_scope` (newest or oldest meeting, also per participant). The intent is one of:
+- **Small talk:** greetings, thanks, "what can you do". The analysis writes a short reply; the graph skips retrieval and citations.
 - **Catalog:** counts and lists of projects, meetings, participants.
 - **Participant involvement:** which meetings a person attended.
 - **Content Q&A:** everything else, answered by retrieval.
@@ -264,12 +273,15 @@ sequenceDiagram
     FE->>BE: POST /api/v1/query with last 5 Q and A as history
     BE->>BE: Verify JWT, resolve project scope, set user_id from the token
     BE->>EN: POST /engine/query + X-Internal-Api-Key + user_id
-    EN->>GM: rewrite_query - fix typos, standalone question, date range, plus known speakers and recent meetings
-    GM-->>EN: JSON query, dates, speaker, intent, time_scope, meeting_id, cross_meeting
     EN->>DB: Account's meetings, projects, speakers
     DB-->>EN: records
-    EN->>EN: Resolve project, speakers, meeting, date. Classify intent
-    alt no meeting on requested date
+    EN->>GM: rewrite_query - fix typos, standalone question
+    GM-->>EN: rewritten question
+    EN->>GM: analyze_query - routing rules plus known speakers, projects, recent meetings
+    GM-->>EN: JSON intent, speaker, meeting_id, project_id, dates, time_scope, catalog_entities, needs_retrieval
+    alt greeting or pleasantry
+        EN-->>BE: short reply, no citations
+    else no meeting on requested date
         EN-->>BE: fallback answer, no citations
     else pure inventory question
         EN->>GM: synthesize from catalog records only
@@ -345,7 +357,7 @@ Each account sees only its own data, enforced in every query and covered by auto
 > 📷 *paste screenshot here*
 
 #### Database-grounded inventory answers
-Counts and lists come from SQL and are computed in code; pure inventory questions skip vector search. Typos are tolerated.
+Counts and lists come from SQL and are computed in code; pure inventory questions skip vector search. Typos are tolerated because the rewrite prompt fixes them.
 **Queries:** `How many meetings are there under the NOLOCODE project?` / `how many meeitngs are there?`
 > 📷 *paste screenshot here*
 

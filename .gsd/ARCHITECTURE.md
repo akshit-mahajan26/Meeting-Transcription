@@ -70,8 +70,8 @@ Key design rules:
   - `summarizer.py`: Level 3 summary (overview, decisions, commitments with owner, blockers), each grounded to turn IDs. LLM extraction with hallucinated-ID guardrail, deterministic regex fallback.
   - Helper endpoints: `/normalize`, `/embed`, `/tag-signals`, `/segment-topics`, `/extract-intelligence`.
 - **Chat / RAG** (`POST /api/v1/engine/query` → `services/rag_service.py` → `graphs/chat_graph.py`), LangGraph `StateGraph` over `ChatState`:
-  - `extract_filters` (`chat_nodes.py`): LLM `rewrite_query` (typo fix, follow-up resolution, date range extraction), loads the account's meetings/projects/speakers, resolves project, speakers (full-name / phrase / fuzzy token), meeting (ID, title, "last meeting", date range), classifies intent.
-  - Intents (`chat_query.py`): `catalog`, `participant_involvement`, `content_qa`.
+  - `extract_filters` (`chat_nodes.py`): loads the account's meetings/projects/speakers, then two LLM calls: `rewrite_query` (`chat_rewrite.py`: typo fix, follow-up resolution only) and `analyze_query` (`chat_analysis.py`: one routing prompt returning intent, speaker, meeting, project, time scope, date range, catalog entities, `needs_retrieval`, small-talk reply). Returned names/IDs are validated against the account's records; on failure the default is `content_qa` with full retrieval.
+  - Intents (`chat_query.py`): `catalog`, `participant_involvement`, `content_qa`, `smalltalk`.
   - `embed_query` → `vector_retrieval` (`chat_retrieval.py`): pgvector cosine similarity + keyword overlap + speaker boost − filler penalty; stratified, speaker-diverse selection across meetings.
   - `llm_synthesis` (`chat_synthesis.py`): grounded prompt with numbered excerpts, catalog/meeting-detail records (`chat_records.py`), current date, history; model reports `SOURCES:` line.
   - `format_citations` (`chat_citations.py`): cites exactly the excerpts the model used (heuristic alignment fallback). Turn-level citations if a meeting is scoped, one per meeting otherwise.
@@ -122,12 +122,13 @@ Raw-media links are only forwarded to Fireflies `uploadAudio`; the resulting tra
 Frontend /assistant → POST /api/v1/query (JWT, history)
   → backend resolves project scope, sets user_id from JWT, forwards to engine with internal key
   → LangGraph:
-      extract_filters ─┬─ no meeting on requested date ─→ fallback ─→ END
+      extract_filters ─┬─ greeting / pleasantry ─────────→ smalltalk ─→ END
+                       ├─ no meeting on requested date ─→ fallback ─→ END
                        ├─ pure inventory (catalog) ─────→ llm_synthesis (DB records only)
                        └─ otherwise ─→ embed_query → vector_retrieval ─┬─ hits ─→ llm_synthesis
                                                                        └─ none ─→ fallback
       llm_synthesis → format_citations → END
-  → answer + citations + routing_mode (LANGGRAPH_RAG | LANGGRAPH_CATALOG | LANGGRAPH_FALLBACK)
+  → answer + citations + routing_mode (LANGGRAPH_RAG | LANGGRAPH_CATALOG | LANGGRAPH_SMALLTALK | LANGGRAPH_FALLBACK)
 ```
 
 ---
@@ -159,7 +160,7 @@ Frontend /assistant → POST /api/v1/query (JWT, history)
 - [ ] Config naming is inconsistent (`OPENROUTER_*` property accessors still referenced in `config.py` though only Gemini is configured; `OpenRouterClient` class actually targets Gemini).
 - [ ] Pydantic schemas duplicated between backend and engine.
 - [ ] Engine CORS is `*`; backend CORS defaults to `*`.
-- [ ] Intent classification and speaker/meeting resolution are rule-based (regex/keyword lists); a mis-route costs accuracy on unusual phrasing.
+- [ ] Intent, speaker and meeting resolution are LLM-driven (`chat_analysis.py`) with no rule-based safety net; a wrong routing decision costs accuracy, and every question costs two small LLM calls of latency before synthesis.
 - [ ] Tests exist only for the engine (`FS-AI-Engine/tests`: account isolation, catalog routing, history, temporal resolution, core, phase2); none for backend/frontend.
 
 ---

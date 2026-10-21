@@ -98,26 +98,29 @@ def _inject_popover_script() -> None:
     (function() {
       try {
         const rootDoc = (window.parent && window.parent.document) ? window.parent.document : document;
-        if (rootDoc.__popover_align_attached) return;
-        rootDoc.__popover_align_attached = true;
+        // Replace any handler attached by an earlier version of this script (the page document outlives reruns)
+        if (rootDoc.__popoverAlignHandler) rootDoc.removeEventListener('mouseover', rootDoc.__popoverAlignHandler);
 
-        rootDoc.addEventListener('mouseover', function(e) {
+        rootDoc.__popoverAlignHandler = function(e) {
           const chip = e.target.closest('.chip');
           if (!chip) return;
           const popover = chip.querySelector('.chip-popover');
           if (!popover) return;
 
           const chipRect = chip.getBoundingClientRect();
-          const chatBox = chip.closest('.st-key-chat_container') || chip.closest('[data-testid="stChatMessage"]') || rootDoc.body;
+          // The message bubble is narrower than the chat container, so measure against the bubble first
+          const chatBox = chip.closest('[data-testid="stChatMessage"]') || chip.closest('.st-key-chat_container') || rootDoc.body;
           const boxRect = chatBox.getBoundingClientRect();
+          const rightEdge = Math.min(boxRect.right, (window.parent || window).innerWidth);
 
-          // If less than 320px of room to the right of the chip, flip alignment to the right
-          if (boxRect.right - chipRect.left < 320) {
+          // If the popover would run past the right edge, flip it so it ends at the chip's right edge
+          if (rightEdge - chipRect.left < popover.offsetWidth + 8) {
             popover.classList.add('popover-align-right');
           } else {
             popover.classList.remove('popover-align-right');
           }
-        });
+        };
+        rootDoc.addEventListener('mouseover', rootDoc.__popoverAlignHandler);
       } catch(e) {}
     })();
     </script>
