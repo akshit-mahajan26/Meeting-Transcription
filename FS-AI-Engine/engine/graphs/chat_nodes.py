@@ -317,6 +317,7 @@ async def extract_filters_node(state: ChatState) -> dict[str, Any]:
 
     return {
         "query_intent": query_intent,
+        "response_depth": analysis.response_depth,
         "time_scope": time_scope,
         "skip_retrieval": skip_retrieval,
         "extracted_speaker": resolved_speaker,

@@ -1,5 +1,4 @@
 import logging
-import os
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
@@ -8,7 +7,7 @@ from .config import settings
 logger = logging.getLogger(__name__)
 
 # Create async engine dynamically from environment or settings.database_url
-db_url = os.getenv("DATABASE_URL") or settings.database_url
+db_url = settings.database_url
 if db_url:
     if db_url.startswith("postgresql://"):
         db_url = db_url.replace("postgresql://", "postgresql+asyncpg://", 1)

@@ -7,8 +7,8 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # Determine parent directories for environment file resolution
 ENGINE_DIR = Path(__file__).resolve().parent.parent.parent
-load_dotenv(ENGINE_DIR / ".env", override=True)
-load_dotenv(".env", override=True)
+load_dotenv(ENGINE_DIR / ".env")
+load_dotenv(".env")
 
 
 class Settings(BaseSettings):
@@ -64,6 +64,13 @@ class Settings(BaseSettings):
         default=1536,
         validation_alias=AliasChoices("EMBEDDING_DIMENSIONS", "embedding_dimensions", "EMBEDDING_DIMENSION"),
         description="Vector dimension matching embedding model and pgvector column definition",
+    )
+
+    # Most similar turns pulled from the database per vector search; 0 removes the cap
+    retrieval_candidate_limit: int = Field(
+        default=1000,
+        ge=0,
+        validation_alias=AliasChoices("RETRIEVAL_CANDIDATE_LIMIT", "retrieval_candidate_limit"),
     )
 
     # Segmentation Parameters

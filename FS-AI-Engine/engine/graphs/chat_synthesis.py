@@ -67,17 +67,24 @@ day. Those historical statements apply only to the day of that past recording.
    - If a user asks about events on a specific date or timeframe (e.g., "what happened on October 14th" or "what \
 did we discuss yesterday"), check the verified "Held on" date of the meetings. If no meeting was held on that date, \
 state clearly that no meetings were recorded for that date.
-5. **Brevity:** Lead with the direct answer. Keep it to 2-5 sentences by default; use a short bullet list only \
-when the user asks for several items. Add more detail only if the user explicitly asks for it (e.g. "in detail", \
-"summarize everything", "explain more"). Do not restate the question or pad with background. Brevity never means dropping a meeting's date.
+5. **Response Depth & Brevity:** Always be direct, well-structured, and concise. Avoid rambling essays, repetitive \
+background padding, or multi-section dissertations.
+   - For direct factual lookups: Keep it concise: 2-4 sentences.
+   - For broader synthesis questions, comparisons, or follow-up explanations (e.g. "how do X and Y relate?", "can you explain it?"): \
+Provide a clear, focused synthesis in 1 to 2 short paragraphs or a compact bulleted list of 3-4 points (aim for roughly 100-180 words).
+   - Never pad with unnecessary headings or transcript narration. Brevity never means dropping a meeting's date.
 6. **Source Reporting:** Numbered transcript excerpts may be provided as [1], [2], ... Never write these numbers or any \
 bracketed references like [3] or [11, 13] in the body of your answer. Instead, end every reply with one final line `SOURCES: ` followed by the \
 comma-separated numbers of the excerpts your answer actually relied on (e.g. `SOURCES: 2, 5`). Write `SOURCES: none` \
 when the answer did not come from the excerpts: greetings and small talk, questions about yourself, answers drawn only \
 from the catalog or meeting-detail records, or when nothing relevant was found.
-7. **Conversation History:** Earlier messages in this conversation may precede the current question. Use them only \
-to understand follow-ups (e.g. "what about him?", "and the other meeting?"). Facts must still come from the excerpts \
-and records supplied with the current question, not from earlier answers.
+7. **Conversation History & Progression:** Earlier messages in this conversation may precede the current question.
+   - Use history to understand conversational references and follow-ups (e.g. "what about him?", "can you explain it?").
+   - Conversational Progression: When the user asks a follow-up (such as asking to explain, elaborate, or follow up on a \
+previous answer), do NOT repeat the previous assistant answer or give the same high-level summary. Treat the previous \
+answer as already established context, and move forward by digging deeper into the transcript excerpts to unpack the \
+specific details, explanations, dialogue, and reasons discussed by the participants.
+   - Facts must still come from the excerpts and records supplied with the current question, not from hallucinated claims.
 8. **Strict Grounding:** Base your response on the provided context, transcript excerpts, and database records. If \
 information is missing from the context, state clearly that the records do not contain it."""
 
@@ -91,10 +98,12 @@ _INLINE_MARKER = re.compile(r"[ \t]*\[\s*\d+(?:\s*[,;\u2013-]\s*\d+)*\s*\]")
 def split_sources_line(answer: str, n_chunks: int) -> tuple[str, list[int] | None]:
     """
     Returns (clean answer, 1-based excerpt numbers the answer relied on).
-    - Removes the trailing `SOURCES: 1, 3` line the model appends.
+    - Removes all `SOURCES: ...` lines the model appends (both per-section and trailing).
     - Removes inline `[11, 13]` excerpt markers the model may still write; they mean nothing to the user.
-    - Numbers are limited to the excerpts provided. `none` gives []. With no usable SOURCES line, inline
-      markers are used if present, else None so the caller can fall back to heuristic alignment.
+    - Numbers are limited to the excerpts provided. `none` gives [].
+    - Aggregates reported source indices across all occurrences in the answer text.
+    - With no usable SOURCES line, inline markers are used if present, else None so the caller
+      can fall back to heuristic alignment.
     """
     def valid(nums: list[str]) -> list[int]:
         return list(dict.fromkeys(int(n) for n in nums if 1 <= int(n) <= n_chunks))
@@ -103,14 +112,35 @@ def split_sources_line(answer: str, n_chunks: int) -> tuple[str, list[int] | Non
     matches = list(_SOURCES_LINE.finditer(answer))
     reported: list[int] | None = None
     if matches:
-        last = matches[-1]
-        answer = answer[: last.start()] + answer[last.end():]
-        value = last.group(1).strip().lower()
-        reported = [] if value in {"none", "n/a", "no sources", "-", ""} else valid(re.findall(r"\d+", value))
+        all_nums: list[str] = []
+        has_numbers = False
+        all_none = True
+        for m in matches:
+            value = m.group(1).strip().lower()
+            if value in {"none", "n/a", "no sources", "-", ""}:
+                continue
+            all_none = False
+            nums = re.findall(r"\d+", value)
+            if nums:
+                has_numbers = True
+                all_nums.extend(nums)
+
+        if has_numbers:
+            reported = valid(all_nums)
+        elif all_none:
+            reported = []
+        else:
+            reported = None
+
+        # Globally remove all SOURCES lines so none leak into user-facing output
+        answer = _SOURCES_LINE.sub("", answer)
+
     clean = _INLINE_MARKER.sub("", answer).strip()
+    clean = re.sub(r"\n{3,}", "\n\n", clean)
     if reported is None and inline:
         reported = inline
     return clean, reported
+
 
 
 # ============================================================================
@@ -246,14 +276,33 @@ async def llm_synthesis_node(state: ChatState) -> dict[str, Any]:
             "llm_model_used": state.get("llm_model_used") or "none",
         }
 
+    has_history = bool(state.get("history"))
+    is_explanatory = state.get("response_depth") == "explanatory"
+    if is_explanatory:
+        progression_note = (
+            " Do NOT repeat previous answers verbatim; move forward by synthesizing the relevant details."
+            if has_history
+            else ""
+        )
+        list_instructions.append(
+            f"- FOCUSED SYNTHESIS:{progression_note} Explain the core discussion, rationale, and participant context directly from the excerpts. "
+            "Keep the response focused in 1 to 2 concise paragraphs (or 3-4 compact bullet points); do not write an overly long essay or pad with repetitive narrative."
+        )
+
     formatted_context = extra_record_context + formatted_context
     instruction_str = "\n".join(list_instructions) if list_instructions else ""
+
+    depth_instruction = (
+        "- Synthesize the explanation clearly and directly in 1 to 2 concise paragraphs (or a compact bulleted list of 3-4 points). Highlight the key decisions, technical rationale, and participant context without writing an overly long essay."
+        if is_explanatory
+        else "- Provide a direct, professional, conversational answer. Keep it concise: 2-4 sentences (or a short bullet list if naming multiple items)."
+    )
 
     user_prompt = (
         f"User Query: {query}\n\n"
         f"Verified Context & Records:\n{formatted_context}\n\n"
         f"Instructions:\n"
-        f"- Provide a direct, professional, conversational answer. Be concise: 2-5 sentences unless the user asks for detail.\n"
+        f"{depth_instruction}\n"
         f"- Never dump raw transcript turns, timestamps, or quotation lists into the main text.\n"
         f"{instruction_str}\n"
         f"- Ground your statements strictly in the facts provided in the excerpts and records."

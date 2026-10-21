@@ -52,5 +52,5 @@ async def query_endpoint(request: EngineQueryRequest) -> RAGQueryResponse:
         logger.error(f"Query pipeline failed: {exc}", exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Query pipeline failed: {exc!s}",
+            detail="Query pipeline failed. See the AI engine logs for details.",
         ) from exc

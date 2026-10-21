@@ -85,17 +85,32 @@ def _snippet(text: str, limit: int = TURN_SNIPPET_CHARS) -> str:
     return text if len(text) <= limit else text[:limit].rsplit(" ", 1)[0] + "…"
 
 
+def _is_trivial_filler(text: str) -> bool:
+    clean = (text or "").strip().lower()
+    return len(clean) < 25 and bool(re.match(r"^(?:ah|ok|okay|yes|no|yeah|right|correct|hello|hi|bye|thanks|scroll up)[\.\,\s]*$", clean))
+
+
 def build_citations(
     chunks: list[dict[str, Any]], meeting_scoped: bool, titles: dict[str, str] | None = None
 ) -> list[dict[str, Any]]:
     """
     Meeting scoped: every aligned turn, in time order, with a text snippet.
-    Across meetings: one citation per meeting the topic came from (best turn's timestamp, with a short snippet for the collapsed excerpt view), best meetings first.
+    Across meetings: one citation per meeting the topic came from (best turn's timestamp,
+    with a short snippet for the collapsed excerpt view), best meetings first.
     """
     titles = titles or {}
     for c in chunks:
         c["meeting_title"] = (c.get("meeting_title") or titles.get(c.get("meeting_id") or "") or "").strip()
-    by_score = sorted(chunks, key=lambda c: c.get("similarity_score", 0.0), reverse=True)
+
+    # Prioritize substantive turns over trivial filler utterances when scoring
+    by_score = sorted(
+        chunks,
+        key=lambda c: (
+            c.get("similarity_score", 0.0) - (2.0 if _is_trivial_filler(c.get("text", "")) else 0.0)
+        ),
+        reverse=True,
+    )
+
     if meeting_scoped:
         top = sorted(by_score, key=lambda c: c.get("start_time", 0.0))
         return [
@@ -132,19 +147,37 @@ def build_citations(
 
 async def format_citations_node(state: ChatState) -> dict[str, Any]:
     """
-    Node 5: Format Citations with Provenance Alignment.
-    Aligns candidate turns with the synthesized answer, then packages them compactly: per-turn
-    snippets when a meeting is selected, one meeting + timestamp entry per meeting otherwise.
+    Node 5: Format Citations with Provenance Alignment & Parity Audit.
+    Aligns candidate turns with the synthesized answer, audits provenance parity to guarantee
+    every discussed meeting receives a citation chip, then packages them compactly:
+    per-turn snippets when a meeting is selected, one meeting + timestamp entry per meeting otherwise.
     """
     retrieved_chunks = state.get("retrieved_chunks", [])
     answer = state.get("answer", "")
     query_intent = state.get("query_intent") or "content_qa"
     used = state.get("used_sources")
+
     if used is not None:
         # The model reported which excerpts it relied on: cite exactly those (none for small talk / off-topic).
-        aligned_chunks = [retrieved_chunks[i - 1] for i in used if i <= len(retrieved_chunks)]
+        aligned_chunks = [retrieved_chunks[i - 1] for i in used if 1 <= i <= len(retrieved_chunks)]
     else:
         aligned_chunks = align_citations_with_answer(retrieved_chunks, answer)
+
+    # Provenance Parity Audit for cross-meeting queries:
+    # If the response explicitly discusses meetings from available_meetings, ensure each
+    # discussed meeting has a citation chip even if the model omitted tagging an excerpt index for it.
+    if not state.get("meeting_id") and state.get("available_meetings") and retrieved_chunks:
+        cited_mids = {c.get("meeting_id") for c in aligned_chunks if c.get("meeting_id")}
+        ans_lower = answer.lower()
+        for m in state.get("available_meetings") or []:
+            m_id = m.get("id")
+            m_title = (m.get("title") or "").strip()
+            if m_id and m_id not in cited_mids and m_title and len(m_title) >= 4 and re.search(rf"\b{re.escape(m_title.lower())}\b", ans_lower):
+                candidates = [c for c in retrieved_chunks if c.get("meeting_id") == m_id]
+                if candidates:
+                    candidates.sort(key=lambda x: x.get("similarity_score", 0.0), reverse=True)
+                    aligned_chunks.append(candidates[0])
+                    cited_mids.add(m_id)
 
     titles = {m["id"]: m["title"] for m in state.get("available_meetings") or [] if m.get("id") and m.get("title")}
     citations = build_citations(aligned_chunks, meeting_scoped=bool(state.get("meeting_id")), titles=titles)
@@ -162,3 +195,4 @@ async def format_citations_node(state: ChatState) -> dict[str, Any]:
         "provenance_verified": True,
         "routing_mode": routing_mode,
     }
+

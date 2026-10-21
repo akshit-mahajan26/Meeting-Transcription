@@ -41,7 +41,7 @@ The Meeting Transcript Intelligence Platform turns recorded meetings into a **kn
 - **Cost:** a content question uses three LLM calls (query rewrite, query analysis, answer) and one embedding call. The answer prompt now always carries the last 5 exchanges and, for inventory questions, the full meeting list. Negligible now; the lines to watch at scale.
 - **Latency:** about 6.4 s per answer on average in the last benchmark run (2026-10-08), which predates the always-on history and the extra analysis call; re-measure.
 - **Transcript quality:** wrong speaker labels or mis-heard words in Fireflies carry straight into answers.
-- **Heuristic retrieval:** ranking uses hand-tuned weights, not a trained reranker, and scans all in-scope turns (no SQL top-k), so it will not scale as-is.
+- **Heuristic retrieval:** ranking uses hand-tuned weights, not a trained reranker, and scores in Python the top `RETRIEVAL_CANDIDATE_LIMIT` (default 1000) turns by vector similarity; the cap is a SQL `LIMIT`, not a true top-k over a combined vector and keyword score.
 - **Accuracy not yet measured:** the 50-question benchmark returned an answer for 49, which measures availability, not correctness. A manual read shows some wrong answers.
 - **Prompt sensitivity:** routing and answers depend on LLM prompts, so model or prompt changes need regression testing.
 
@@ -408,7 +408,7 @@ Every content answer carries citation cards (speaker, time, snippet) for the exc
 | --- | --- | --- |
 | Auth, isolation, ingestion, chat, citations | **Done** | Automated tests cover isolation, inventory routing, history and dates |
 | Topics and summary tiers | **Partial** | Built but not used by retrieval; decisions, commitments, blockers are computed then dropped; only the overview text is saved |
-| Retrieval quality | **Partial** | Hand-tuned scoring, no reranker, no SQL top-k; full-text index unused |
+| Retrieval quality | **Partial** | Hand-tuned scoring, no reranker; SQL candidate cap only (no hybrid ranking); full-text index unused |
 | Evaluation | **Partial** | Harness runs; no correctness metrics yet |
 | Raw audio, webhooks, job status | **Partial** | Audio only forwarded to Fireflies; no webhooks or job-status endpoint. Failed ingestions are now recorded as `FAILED` meetings with a reason, but there is no retry queue |
 | Deployment and tests | **Partial** | Unit and integration tests exist in all three services (engine: isolation, catalog routing, temporal resolution, history; backend: API and auth isolation; frontend: auth and pages). No docker-compose, no end-to-end tests or CI |
@@ -416,7 +416,7 @@ Every content answer carries citation cards (speaker, time, snippet) for the exc
 ### 6.3 Next Steps, in Priority Order
 
 1. **Measure correctness** on the benchmark for a real baseline.
-2. **Upgrade retrieval:** top-k in SQL, hybrid vector plus full-text search, reranker.
+2. **Upgrade retrieval:** hybrid top-k in SQL (a plain candidate cap exists), hybrid vector plus full-text search, reranker.
 3. **Use topics and summaries;** persist and expose decisions and action items.
 4. **Webhook-driven ingestion** with job status; auto-ingest uploaded audio.
 5. **Production readiness:** docker-compose, end-to-end tests and CI, secrets and CORS hardening.

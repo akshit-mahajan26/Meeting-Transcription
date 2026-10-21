@@ -3,6 +3,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from ....api.deps import get_current_user
+from ....core.config import get_settings
 from ....core.database import MeetingModel, MeetingTopicModel, ProjectModel, SpeakerTurnModel, UserModel, get_db
 from ....core.security import create_access_token, hash_password, verify_password
 from ....schemas.auth import Credentials, TokenResponse, UserResponse
@@ -24,6 +25,8 @@ def _token_for(user: UserModel) -> TokenResponse:
     summary="Create an account",
 )
 def signup(payload: Credentials, db: Session = Depends(get_db)) -> TokenResponse:
+    if not get_settings().allow_signup:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Sign-up is disabled on this server.")
     if db.query(UserModel).filter(UserModel.email == payload.email).first():
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="An account with this email already exists.")
     user = UserModel(email=payload.email, password_hash=hash_password(payload.password))

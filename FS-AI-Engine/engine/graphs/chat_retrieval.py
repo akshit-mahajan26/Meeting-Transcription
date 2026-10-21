@@ -15,6 +15,7 @@ from typing import Any
 
 from sqlalchemy import text
 
+from ..core.config import get_settings
 from ..core.database import AsyncSessionLocal
 from ..services.embedding_service import EmbeddingService
 from .chat_query import MEETING_STOP_WORDS, ChatState, _speaker_clause, _state_speakers
@@ -167,7 +168,11 @@ async def vector_retrieval_node(state: ChatState) -> dict[str, Any]:
                     all_spk_clauses.append(f"({' OR '.join(sub_clauses)})")
                 query_parts.append(f"AND ({' OR '.join(all_spk_clauses)})")
 
+            # Bound the candidate pool in SQL so cost does not grow with the whole library (keyword-only search has no ranking to cut by)
+            candidate_limit = get_settings().retrieval_candidate_limit
             order_by = " ORDER BY vector_sim DESC, t.start_time ASC" if has_vector else " ORDER BY t.start_time ASC"
+            if has_vector and candidate_limit:
+                order_by += f" LIMIT {int(candidate_limit)}"
             query_sql = " ".join(query_parts) + order_by
             res = await session.execute(text(query_sql), params)
             rows = res.fetchall()

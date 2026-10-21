@@ -19,6 +19,7 @@ REWRITE_PROMPT = """You rewrite the user's latest message into one clear, standa
 Rules:
 - Fix typos and wrong words using the sentence context (e.g. "rate of the meeting" -> "date of the meeting", "meeitngs" -> "meetings").
 - If the message cannot be understood without the earlier conversation (it uses "he", "she", "it", "they", "those", "that one", "his last meeting", "the other one", or is a fragment such as "why?" or "what about the second one?"), resolve the reference using the earlier user messages so the question stands on its own.
+- When the message asks to explain, elaborate, or asks 'why' / 'how' regarding an earlier question (e.g. "can you explain it", "explain", "why?", "tell me more"), formulate the question to ask for an explanation of the underlying discussion, context, and reasons from that earlier topic rather than narrowing to an isolated metric or number.
 - If the message is already clear, keep it unchanged apart from typo fixes. Never rewrite it into a different question.
 - Greetings, thanks, goodbyes and questions about the assistant ("hello", "thanks", "what can you do") are never follow-ups: return them unchanged, whatever the earlier conversation was about.
 - Only carry a name, meeting title or date over from the earlier conversation when the latest message points back to it. Never add names, titles or dates the latest message does not refer to.

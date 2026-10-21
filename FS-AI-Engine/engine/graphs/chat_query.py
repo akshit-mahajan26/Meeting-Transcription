@@ -32,6 +32,7 @@ class ChatState(TypedDict, total=False):
     query: str
     user_id: str
     query_intent: str
+    response_depth: str | None  # "concise" (direct factual lookup/short answer) or "explanatory" (deep dive, rationale, context, follow-up explanation)
     time_scope: str | None  # e.g. "latest" for "most recent meeting" / "last call"
     skip_retrieval: bool
     catalog_entities: list[str] | None  # database listings the question needs: projects, meetings, participants, topics

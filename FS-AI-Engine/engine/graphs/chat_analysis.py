@@ -34,24 +34,26 @@ Output one JSON object with these fields:
 - "participant_involvement": which meeting(s) a person was in, attended, joined, took part in or was part of, including their latest or earliest meeting. Needs a specific person.
 - "catalog": rosters, inventories, counts or lists of projects, meetings, participants or topics in the system, with no question about what was said ("how many meetings are there?", "list all projects", "who are the participants?").
 - "content_qa": anything about meeting content: discussions, decisions, what someone said, action items, transcript details, summaries. This is the default when unsure.
-2. "speaker": if the question is about a specific person, their EXACT full name from Known Participants; otherwise null. A name not in the list is null.
-3. "meeting_id": if the question targets one specific meeting by title, calendar date, order ("the first meeting", "second call", "latest standup", "the meeting after X"), copy its exact ID from Available Meetings; otherwise null.
-4. "cross_meeting": true if the question spans several or all meetings ("all meetings", "each meeting", "in which meetings", "every call"); then "meeting_id" must be null. Otherwise false.
-5. "time_scope": "latest" for the last, latest, most recent or previous meeting/discussion; "earliest" for the first, initial, earliest or oldest; otherwise null.
-6. "date_from" / "date_to": the inclusive range of days (YYYY-MM-DD, or MM-DD if no year) on which the meetings in question took place, ONLY if the question names a date or period ("on 5 May", "after Oct 2", "last week", "yesterday"; work these out from Today's date). Otherwise null.
-7. "project_id": if the question names one of the Available Projects (by name or ID), copy its exact ID; otherwise null.
-8. "catalog_entities": which database listings are needed to answer, any of "projects", "meetings", "participants", "topics". Use [] when none are needed. For intent "catalog" list every entity the question concerns.
-9. "needs_retrieval": true if the answer needs transcript text. false ONLY when it can be answered entirely from the database listings (names, counts, dates, who attended which meeting), i.e. a pure inventory or attendance question. Anything about what was said, decided, discussed, agreed, decided, topics or agenda, risks, owners or action items is true.
-10. "reply": only for intent "smalltalk": a short, friendly reply (1-2 sentences) that fits the message and, where natural, mentions that you can answer questions about recorded meetings (discussions, decisions, action items, attendance, projects). Otherwise null.
+2. "response_depth": "explanatory" ONLY when the user explicitly requests an in-depth breakdown or detailed explanation ("in detail", "detailed explanation", "explain in detail", "deep dive") OR when asking a follow-up to unpack, explain, or elaborate on a previous answer/topic ("can you explain it", "explain", "why is that?", "tell me more"). Otherwise "concise": the DEFAULT for all standard inquiries, initial questions, direct factual lookups, overviews, summaries, single numbers, dates, rosters, and general topic questions ("what was discussed", "tell me about", "why did X happen", "how does X work", "summarize the meeting").
+3. "speaker": if the question is about a specific person, their EXACT full name from Known Participants; otherwise null. A name not in the list is null.
+4. "meeting_id": if the question targets one specific meeting by title, calendar date, order ("the first meeting", "second call", "latest standup", "the meeting after X"), copy its exact ID from Available Meetings; otherwise null.
+5. "cross_meeting": true if the question spans several or all meetings ("all meetings", "each meeting", "in which meetings", "every call"); then "meeting_id" must be null. Otherwise false.
+6. "time_scope": "latest" for the last, latest, most recent or previous meeting/discussion; "earliest" for the first, initial, earliest or oldest; otherwise null.
+7. "date_from" / "date_to": the inclusive range of days (YYYY-MM-DD, or MM-DD if no year) on which the meetings in question took place, ONLY if the question names a date or period ("on 5 May", "after Oct 2", "last week", "yesterday"; work these out from Today's date). Otherwise null.
+8. "project_id": if the question names one of the Available Projects (by name or ID), copy its exact ID; otherwise null.
+9. "catalog_entities": which database listings are needed to answer, any of "projects", "meetings", "participants", "topics". Use [] when none are needed. For intent "catalog" list every entity the question concerns.
+10. "needs_retrieval": true if the answer needs transcript text. false ONLY when it can be answered entirely from the database listings (names, counts, dates, who attended which meeting), i.e. a pure inventory or attendance question. Anything about what was said, decided, discussed, agreed, decided, topics or agenda, risks, owners or action items is true.
+11. "reply": only for intent "smalltalk": a short, friendly reply (1-2 sentences) that fits the message and, where natural, mentions that you can answer questions about recorded meetings (discussions, decisions, action items, attendance, projects). Otherwise null.
 
 Reply with only JSON:
-{"intent": "<smalltalk|participant_involvement|catalog|content_qa>", "speaker": "<name or null>", "meeting_id": "<id or null>", "cross_meeting": <true|false>, "project_id": "<id or null>", "time_scope": "<latest|earliest|null>", "date_from": "<date or null>", "date_to": "<date or null>", "catalog_entities": [<entities>], "needs_retrieval": <true|false>, "reply": "<text or null>"}"""
+{"intent": "<smalltalk|participant_involvement|catalog|content_qa>", "response_depth": "<concise|explanatory>", "speaker": "<name or null>", "meeting_id": "<id or null>", "cross_meeting": <true|false>, "project_id": "<id or null>", "time_scope": "<latest|earliest|null>", "date_from": "<date or null>", "date_to": "<date or null>", "catalog_entities": [<entities>], "needs_retrieval": <true|false>, "reply": "<text or null>"}"""
 
 
 @dataclass
 class QueryAnalysis:
     """Structured routing decision. The defaults describe the safe path: full transcript retrieval."""
     intent: str = QueryIntent.CONTENT_QA
+    response_depth: str = "concise"
     speaker: str | None = None
     meeting_id: str | None = None
     project_id: str | None = None
@@ -143,8 +145,12 @@ async def analyze_query(
     entities = parsed.get("catalog_entities")
     entities = [e for e in entities if e in CATALOG_ENTITIES] if isinstance(entities, list) else []
 
+    raw_depth = str(parsed.get("response_depth") or "").lower().strip()
+    response_depth = "explanatory" if raw_depth == "explanatory" else "concise"
+
     analysis = QueryAnalysis(
         intent=intent,
+        response_depth=response_depth,
         speaker=speaker,
         meeting_id=meeting_id,
         project_id=project_id,

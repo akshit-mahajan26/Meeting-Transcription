@@ -1,6 +1,5 @@
 import json
 import logging
-import os
 import uuid
 from collections.abc import Generator
 from datetime import UTC, datetime
@@ -42,14 +41,7 @@ def utc_now():
 
 
 # Engine configuration
-db_url = os.getenv("DATABASE_URL") or settings.database_url
-if not db_url:
-    raise RuntimeError("DATABASE_URL environment variable is required. Please configure it in your environment or .env file.")
-
-engine = create_engine(
-    db_url,
-    connect_args={"check_same_thread": False} if "sqlite" in db_url else {},
-)
+engine = create_engine(settings.database_url, pool_pre_ping=True)
 
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
@@ -193,6 +185,7 @@ class SpeakerTurnModel(Base):
 
 
 BASELINE_REVISION = "e0d6e74c6561"
+MIGRATION_LOCK_KEY = 7_204_001  # arbitrary app-wide id for the migration advisory lock
 
 
 def _is_unversioned_legacy_schema() -> bool:
@@ -227,22 +220,28 @@ def init_db() -> None:
 
         from alembic import command
         from alembic.config import Config
+        from sqlalchemy import text
 
         from .schema_versioning import install_schema_comment_versioning
 
         install_schema_comment_versioning()
         alembic_ini_path = Path(__file__).resolve().parent.parent.parent / "alembic.ini"
-        if alembic_ini_path.exists():
-            alembic_cfg = Config(str(alembic_ini_path))
-            if _is_unversioned_legacy_schema():
-                # Tables built by the pre-Alembic startup code already match the baseline revision.
-                command.stamp(alembic_cfg, BASELINE_REVISION)
-            command.upgrade(alembic_cfg, "head")
-        else:
-            Base.metadata.create_all(bind=engine)
+        if not alembic_ini_path.exists():
+            # create_all cannot alter existing tables, so never substitute it for migrations.
+            raise RuntimeError(f"alembic.ini not found at {alembic_ini_path}; the image must ship alembic/ and alembic.ini.")
+        alembic_cfg = Config(str(alembic_ini_path))
+        # One replica migrates at a time; the others wait, then find nothing left to do.
+        with engine.connect() as lock_conn:
+            lock_conn.execute(text("SELECT pg_advisory_lock(:key)"), {"key": MIGRATION_LOCK_KEY})
+            try:
+                if _is_unversioned_legacy_schema():
+                    # Tables built by the pre-Alembic startup code already match the baseline revision.
+                    command.stamp(alembic_cfg, BASELINE_REVISION)
+                command.upgrade(alembic_cfg, "head")
+            finally:
+                lock_conn.execute(text("SELECT pg_advisory_unlock(:key)"), {"key": MIGRATION_LOCK_KEY})
+                lock_conn.commit()
     except Exception:
-        # Never fall back to create_all here: it cannot alter existing tables, so the app
-        # would start against a half-migrated schema and fail on every query.
         logging.getLogger(__name__).exception("Database migration failed; refusing to start.")
         raise
 

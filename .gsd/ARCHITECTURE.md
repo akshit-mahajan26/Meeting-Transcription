@@ -51,9 +51,9 @@ Key design rules:
 - `ui/`: styles (`style.css`), shell, nav, session state, scope panel (project/meeting filter), components.
 
 ### 2. FS-backend (gateway + ingestion)
-- Entry: [app/main.py](../FS-backend/app/main.py). Lifespan runs `init_db()`: enables `vector` extension, runs Alembic to head (stamps legacy pre-Alembic DBs at baseline).
+- Entry: [app/main.py](../FS-backend/app/main.py). Lifespan runs `init_db()`: enables `vector` extension, runs Alembic to head under a Postgres advisory lock so concurrent replicas migrate one at a time (stamps legacy pre-Alembic DBs at baseline). A missing `alembic.ini` aborts startup; there is no `create_all` fallback.
 - Routes under `/api/v1`, all protected by `get_current_user` except `/auth/*`:
-  - `auth`: `POST /auth/signup`, `/auth/login`, `GET /auth/me`.
+  - `auth`: `POST /auth/signup` (returns 403 when `ALLOW_SIGNUP=false`), `/auth/login`, `GET /auth/me`.
   - `meetings`: `GET /meetings/`, `/meetings/projects`, `/meetings/{id}`, `/meetings/{id}/turns`.
   - `POST /meetings/ingest-link` (202, background task) in `api/routers/meetings.py`.
   - `POST /query` (pass-through proxy to engine) in `api/routers/query.py`.
@@ -152,7 +152,7 @@ Frontend /assistant → POST /api/v1/query (JWT, history)
 - [ ] Raw audio/video links are not ingested end to end; no Fireflies webhook receiver exists (ingestion is link-triggered only).
 - [ ] Background ingestion failures are only logged; no job status, retry queue, or user-visible error.
 - [ ] No hybrid reranker or macro/micro two-tier retrieval: ranking is a heuristic score (3×vector + 1.5×keyword hits + speaker boost). The `tsv` full-text column and Level 2/3 data are stored but **not yet used in retrieval**.
-- [ ] Vector retrieval SQL has no LIMIT/top-k: every in-scope turn is fetched and scored in Python, so the HNSW index is not exploited and it will not scale.
+- [ ] Vector retrieval fetches at most `RETRIEVAL_CANDIDATE_LIMIT` (default 1000) turns by similarity, then scores them in Python; `0` removes the cap. Keyword-only search is uncapped, and keyword matches outside the top candidates are dropped.
 - [ ] Level 3 decisions/commitments/blockers are computed during ingestion but not persisted (only the overview text is); topic summary text is also dropped because the backend reads `summary`/`compiled_text` while the engine returns `topic_summary`.
 - [ ] Evaluation: the DeepEval run records answers but no correctness metric is computed; `evaluations/run_evaluations.py` predates auth and gets HTTP 401.
 - [ ] Topic segmentation uses lexical (bag-of-words) similarity, not embeddings; `boundary_similarity_threshold`, `max_turn_tokens`, `chunk_overlap_sentences` settings are unused (no token-aware chunking).

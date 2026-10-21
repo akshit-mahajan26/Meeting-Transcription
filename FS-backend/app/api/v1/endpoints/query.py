@@ -140,8 +140,8 @@ async def proxy_query_endpoint(
     except HTTPException:
         raise
     except Exception as exc:
-        logger.error(f"[API Gateway] Unexpected proxy error: {exc}")
+        logger.error(f"[API Gateway] Unexpected proxy error: {exc}", exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Gateway proxy error: {exc!s}"
+            detail="Gateway proxy error. See the backend logs for details."
         ) from exc

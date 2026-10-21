@@ -8,7 +8,7 @@
 |------------|---------|
 | Python >=3.11 | All three services |
 | uv | Package/environment manager |
-| Docker | One `Dockerfile` per service (no compose file yet) |
+| Docker | One `Dockerfile` per service (non-root user, `HEALTHCHECK`, `.dockerignore`; no compose file yet) |
 | Ruff | Lint/format (`ruff.toml`, per-service `githooks/pre-commit`) |
 
 ---
@@ -71,12 +71,14 @@ Testing: `pytest`, `pytest-asyncio`. Tests currently exist for FS-AI-Engine only
 
 | Variable | Service | Purpose |
 |----------|---------|---------|
-| `DATABASE_URL` | backend, engine | PostgreSQL connection (engine converts to `postgresql+asyncpg://`) |
+| `DATABASE_URL` | backend, engine | PostgreSQL connection (backend normalizes to `postgresql+psycopg://`, engine to `postgresql+asyncpg://`) |
 | `ENGINE_API_KEY` | backend, engine | Shared secret (>=16 chars) in `X-Internal-Api-Key` |
 | `AI_ENGINE_URL`, `AI_ENGINE_TIMEOUT_SECONDS` | backend | Engine location and timeout (default 300s for ingestion) |
 | `JWT_SECRET`, `JWT_ALGORITHM`, `ACCESS_TOKEN_EXPIRE_MINUTES` | backend | Login tokens |
 | `FIREFLIES_API_KEY`, `FIREFLIES_API_URL` | backend | Fireflies access |
 | `CORS_ORIGINS` | backend | Allowed origins (default `*`) |
+| `ALLOW_SIGNUP` | backend | `false` blocks new account registration (default `true`) |
+| `RETRIEVAL_CANDIDATE_LIMIT` | engine | Max similar turns fetched per vector search (default 1000, `0` = no cap) |
 | `GEMINI_API_KEY` (alias `GOOGLE_API_KEY`), `GEMINI_BASE_URL` | engine | LLM + embeddings |
 | `LLM_MODEL_NAME`, `EMBEDDING_MODEL`, `EMBEDDING_DIMENSIONS` | engine | Model selection (dims must match the `vector(1536)` column) |
 | `FASTAPI_BACKEND_URL` | frontend | Backend base URL |

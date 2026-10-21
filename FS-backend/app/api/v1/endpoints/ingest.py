@@ -58,11 +58,11 @@ def parse_meeting_link(url_str: str) -> dict[str, Any]:
         ValueError if URL format is unsupported.
     """
     parsed = urlparse(url_str)
-    host = (parsed.netloc or "").lower()
+    host = (parsed.hostname or "").lower()
     path = parsed.path or ""
 
     # 1. Fireflies Dashboard Link Check
-    if "fireflies.ai" in host:
+    if host == "fireflies.ai" or host.endswith(".fireflies.ai"):
         if "::" in path:
             parts = path.split("::")
             slug_part = parts[0].rstrip("/").split("/")[-1]

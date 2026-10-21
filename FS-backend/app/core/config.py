@@ -19,6 +19,12 @@ class Settings(BaseSettings):
     # CORS configuration
     cors_origins: list[str] | str = ["*"]
 
+    # Set false to stop new accounts from registering (existing accounts keep working)
+    allow_signup: bool = Field(
+        default=True,
+        validation_alias=AliasChoices("ALLOW_SIGNUP", "allow_signup"),
+    )
+
     # Database configuration
     database_url: str = Field(
         validation_alias=AliasChoices("DATABASE_URL", "database_url"),
@@ -79,8 +85,11 @@ class Settings(BaseSettings):
     @field_validator("database_url", mode="before")
     @classmethod
     def assemble_database_url(cls, v: str) -> str:
-        if isinstance(v, str) and v.startswith("postgres://"):
-            return v.replace("postgres://", "postgresql://", 1)
+        # Name the psycopg 3 driver explicitly: a bare postgresql:// URL selects whichever driver the installed SQLAlchemy defaults to.
+        if isinstance(v, str):
+            for bare in ("postgres://", "postgresql://"):
+                if v.startswith(bare):
+                    return "postgresql+psycopg://" + v[len(bare):]
         return v
 
     @field_validator("cors_origins", mode="before")
