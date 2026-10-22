@@ -11,10 +11,12 @@ from __future__ import annotations
 
 import logging
 import os
-import re
 import time
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, Optional
+
+from langgraph.config import get_stream_writer
+from langgraph.types import RunnableConfig
 
 from ..core.config import settings
 from ..services.llm_client import get_llm_client
@@ -25,9 +27,11 @@ from .chat_query import (
     is_name_token_match,
 )
 from .chat_records import build_catalog_records, build_meeting_details
+from .chat_sources import AnswerStreamFilter, split_sources_line
 
 # Dedicated AI Service Logger
 logger = logging.getLogger("fs-ai-engine.chat_graph")
+
 
 def get_system_prompt(now_utc: datetime | None = None) -> str:
     """Constructs the universal RAG system prompt with live temporal metadata reference."""
@@ -89,68 +93,43 @@ specific details, explanations, dialogue, and reasons discussed by the participa
 information is missing from the context, state clearly that the records do not contain it."""
 
 
-_SOURCES_LINE = re.compile(r"^[\s*_`>#-]*sources?[\s*_`]*:[\s*_`]*(.*?)[\s*_`]*$", re.IGNORECASE | re.MULTILINE)
-
-
-_INLINE_MARKER = re.compile(r"[ \t]*\[\s*\d+(?:\s*[,;\u2013-]\s*\d+)*\s*\]")
-
-
-def split_sources_line(answer: str, n_chunks: int) -> tuple[str, list[int] | None]:
+async def _stream_completion(llm_client: Any, messages: list[dict[str, str]], model: str) -> str:
     """
-    Returns (clean answer, 1-based excerpt numbers the answer relied on).
-    - Removes all `SOURCES: ...` lines the model appends (both per-section and trailing).
-    - Removes inline `[11, 13]` excerpt markers the model may still write; they mean nothing to the user.
-    - Numbers are limited to the excerpts provided. `none` gives [].
-    - Aggregates reported source indices across all occurrences in the answer text.
-    - With no usable SOURCES line, inline markers are used if present, else None so the caller
-      can fall back to heuristic alignment.
+    Streams the completion to the graph's custom stream as {"type": "token", "text": ...} and returns the full text.
+    If the stream breaks, the answer is generated again in one piece; the final result then replaces what was shown.
     """
-    def valid(nums: list[str]) -> list[int]:
-        return list(dict.fromkeys(int(n) for n in nums if 1 <= int(n) <= n_chunks))
-
-    inline = valid([n for m in _INLINE_MARKER.findall(answer) for n in re.findall(r"\d+", m)])
-    matches = list(_SOURCES_LINE.finditer(answer))
-    reported: list[int] | None = None
-    if matches:
-        all_nums: list[str] = []
-        has_numbers = False
-        all_none = True
-        for m in matches:
-            value = m.group(1).strip().lower()
-            if value in {"none", "n/a", "no sources", "-", ""}:
-                continue
-            all_none = False
-            nums = re.findall(r"\d+", value)
-            if nums:
-                has_numbers = True
-                all_nums.extend(nums)
-
-        if has_numbers:
-            reported = valid(all_nums)
-        elif all_none:
-            reported = []
-        else:
-            reported = None
-
-        # Globally remove all SOURCES lines so none leak into user-facing output
-        answer = _SOURCES_LINE.sub("", answer)
-
-    clean = _INLINE_MARKER.sub("", answer).strip()
-    clean = re.sub(r"\n{3,}", "\n\n", clean)
-    if reported is None and inline:
-        reported = inline
-    return clean, reported
-
+    write = get_stream_writer()
+    clean = AnswerStreamFilter()
+    parts: list[str] = []
+    try:
+        async for delta in llm_client.stream_chat_completion(
+            messages=messages, model=model, max_tokens=4096, temperature=0.2
+        ):
+            parts.append(delta)
+            if text := clean.feed(delta):
+                write({"type": "token", "text": text})
+        if text := clean.flush():
+            write({"type": "token", "text": text})
+    except Exception as exc:
+        logger.warning(f"[LANGGRAPH: LLM_SYNTHESIS] Streaming failed, generating the answer in one piece: {exc}")
+        return await llm_client.generate_chat_completion(
+            messages=messages, model=model, max_tokens=4096, temperature=0.2
+        )
+    return "".join(parts).strip()
 
 
 # ============================================================================
 # Node 4: LLM Synthesis Node
 # ============================================================================
 
-async def llm_synthesis_node(state: ChatState) -> dict[str, Any]:
+
+# LangGraph only injects `config` for these exact annotations (a `RunnableConfig | None` string is silently skipped)
+async def llm_synthesis_node(state: ChatState, config: Optional[RunnableConfig] = None) -> dict[str, Any]:  # noqa: UP045
     """
     Node 4: LLM Synthesis with OpenRouter.
     Executes conversational completion strictly grounded in verified database catalog records and transcript excerpts.
+    When the run was started with `configurable.stream_answer`, the answer is also emitted token by token on the
+    graph's custom stream; the returned state update is the same either way.
     """
     llm_start = time.time()
     query = state.get("query", "").strip()
@@ -175,19 +154,19 @@ async def llm_synthesis_node(state: ChatState) -> dict[str, Any]:
         if resolved_speakers:
             c_spk_lower = (c.get("speaker") or "").lower()
             is_speaker = any(
-                s.lower() == c_spk_lower
-                or is_name_token_match(s.split()[0], c_spk_lower)
-                or s.lower() in c_spk_lower
+                s.lower() == c_spk_lower or is_name_token_match(s.split()[0], c_spk_lower) or s.lower() in c_spk_lower
                 for s in resolved_speakers
             )
             if is_speaker:
                 spk_tag += f" [PARTICIPANT SPOKE: {c['speaker']} spoke this turn]"
             else:
-                spk_tag += f" [PARTICIPANT MENTION ONLY: Spoken by {c['speaker']}, NOT by {', '.join(resolved_speakers)}]"
+                spk_tag += (
+                    f" [PARTICIPANT MENTION ONLY: Spoken by {c['speaker']}, NOT by {', '.join(resolved_speakers)}]"
+                )
 
         context_blocks.append(
-            f"[{i+1}] Meeting: {m_title_str} | Held on: {m_date_str} | Topic: {c.get('topic_context')} | {spk_tag}\n"
-            f"Quote: \"{c['text']}\""
+            f"[{i + 1}] Meeting: {m_title_str} | Held on: {m_date_str} | Topic: {c.get('topic_context')} | {spk_tag}\n"
+            f'Quote: "{c["text"]}"'
         )
     formatted_context = "\n---\n".join(context_blocks)
 
@@ -320,13 +299,21 @@ async def llm_synthesis_node(state: ChatState) -> dict[str, Any]:
         {"role": "user", "content": user_prompt},
     ]
 
-    target_model = getattr(settings, "LLM_MODEL_NAME", None) or os.getenv("LLM_MODEL_NAME") or os.getenv("LLM_MODEL") or "gemini-2.5-flash"
-    answer = await llm_client.generate_chat_completion(
-        messages=messages,
-        model=target_model,
-        max_tokens=4096,
-        temperature=0.2,
+    target_model = (
+        getattr(settings, "LLM_MODEL_NAME", None)
+        or os.getenv("LLM_MODEL_NAME")
+        or os.getenv("LLM_MODEL")
+        or "gemini-2.5-flash"
     )
+    if (config or {}).get("configurable", {}).get("stream_answer") and hasattr(llm_client, "stream_chat_completion"):
+        answer = await _stream_completion(llm_client, messages, target_model)
+    else:
+        answer = await llm_client.generate_chat_completion(
+            messages=messages,
+            model=target_model,
+            max_tokens=4096,
+            temperature=0.2,
+        )
 
     answer, used_sources = split_sources_line(answer, len(retrieved_chunks))
 
@@ -343,9 +330,11 @@ async def llm_synthesis_node(state: ChatState) -> dict[str, Any]:
         "llm_model_used": target_model,
     }
 
+
 # ============================================================================
 # Node 6: Fallback Node
 # ============================================================================
+
 
 async def fallback_node(state: ChatState) -> dict[str, Any]:
     """
@@ -353,7 +342,9 @@ async def fallback_node(state: ChatState) -> dict[str, Any]:
     Gracefully handles zero-match scenarios with conversational assistance.
     """
     query = state.get("query", "")
-    logger.warning(f"[LANGGRAPH: FALLBACK] Zero matching transcript excerpts found in vector database for query '{query}'.")
+    logger.warning(
+        f"[LANGGRAPH: FALLBACK] Zero matching transcript excerpts found in vector database for query '{query}'."
+    )
 
     if state.get("no_meeting_on_date"):
         fallback_answer = (

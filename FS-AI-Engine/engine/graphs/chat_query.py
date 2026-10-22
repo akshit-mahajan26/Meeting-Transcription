@@ -32,6 +32,7 @@ class ChatState(TypedDict, total=False):
     query: str
     user_id: str
     query_intent: str
+    analysis: Any  # QueryAnalysis from the analyze step, read by the scope and records steps
     response_depth: str | None  # "concise" (direct factual lookup/short answer) or "explanatory" (deep dive, rationale, context, follow-up explanation)
     time_scope: str | None  # e.g. "latest" for "most recent meeting" / "last call"
     skip_retrieval: bool
