@@ -1,7 +1,5 @@
 import contextlib
-import json
 import logging
-from collections.abc import Iterable, Iterator
 from typing import Any
 
 import httpx
@@ -34,24 +32,6 @@ def _error_detail(response: httpx.Response) -> str:
     return str(detail)
 
 
-def _iter_sse(lines: Iterable[str]) -> Iterator[tuple[str, dict[str, Any]]]:
-    """Parses server-sent-event lines into (event name, JSON data); events without valid JSON data are skipped."""
-    event, data = "message", []
-    for line in lines:
-        if line == "":
-            if data:
-                with contextlib.suppress(ValueError):
-                    yield event, json.loads("\n".join(data))
-            event, data = "message", []
-        elif line.startswith("event:"):
-            event = line[6:].strip()
-        elif line.startswith("data:"):
-            data.append(line[5:].lstrip())
-    if data:  # the stream ended without the blank line that closes an event
-        with contextlib.suppress(ValueError):
-            yield event, json.loads("\n".join(data))
-
-
 class MeetingIntelligenceClient:
     """
     HTTP Client for communicating with the FastAPI Meeting Intelligence backend.
@@ -77,10 +57,6 @@ class MeetingIntelligenceClient:
     @property
     def query_url(self) -> str:
         return f"{self.base_url}{frontend_config.QUERY_ENDPOINT}"
-
-    @property
-    def query_stream_url(self) -> str:
-        return f"{self.query_url}/stream"
 
     @property
     def meetings_api_url(self) -> str:
@@ -119,34 +95,6 @@ class MeetingIntelligenceClient:
     def signup(self, email: str, password: str) -> dict[str, Any]:
         return self._authenticate("signup", email, password)
 
-    @staticmethod
-    def _query_payload(
-        prompt: str, project_id: str | None, speaker: str | None, meeting_id: str | None, history: list[dict[str, str]] | None
-    ) -> dict[str, Any]:
-        return {
-            "query": prompt.strip(),
-            "project_id": project_id if project_id else None,
-            "speaker": speaker if speaker else None,
-            "meeting_id": meeting_id if meeting_id else None,
-            "history": history or [],
-        }
-
-    @staticmethod
-    def _query_result(data: dict[str, Any], prompt: str) -> dict[str, Any]:
-        """The answer dict the UI works with, from the backend's query response."""
-        return {
-            "success": True,
-            "query": data.get("query", prompt),
-            "routing_mode": data.get("routing_mode", "UNKNOWN"),
-            "routing_reasoning": data.get("routing_reasoning", ""),
-            "answer": data.get("answer", "No answer provided by the model."),
-            "citations": data.get("citations", []),
-            "citations_count": data.get("citations_count", 0),
-            "provenance_verified": data.get("provenance_verified", False),
-            "macro_data": data.get("macro_data"),
-            "llm_model_used": data.get("llm_model_used", "gpt-4o-mini")
-        }
-
     def query_backend(
         self,
         prompt: str,
@@ -167,7 +115,13 @@ class MeetingIntelligenceClient:
                 "answer": "⚠️ **Configuration Required**: `FASTAPI_BACKEND_URL` is not set. Please set it in Streamlit Secrets.",
                 "citations": []
             }
-        payload = self._query_payload(prompt, project_id, speaker, meeting_id, history)
+        payload = {
+            "query": prompt.strip(),
+            "project_id": project_id if project_id else None,
+            "speaker": speaker if speaker else None,
+            "meeting_id": meeting_id if meeting_id else None,
+            "history": history or [],
+        }
 
         try:
             with httpx.Client(timeout=self.timeout) as client:
@@ -179,7 +133,19 @@ class MeetingIntelligenceClient:
                 )
 
                 if response.status_code == 200:
-                    return self._query_result(response.json(), prompt)
+                    data = response.json()
+                    return {
+                        "success": True,
+                        "query": data.get("query", prompt),
+                        "routing_mode": data.get("routing_mode", "UNKNOWN"),
+                        "routing_reasoning": data.get("routing_reasoning", ""),
+                        "answer": data.get("answer", "No answer provided by the model."),
+                        "citations": data.get("citations", []),
+                        "citations_count": data.get("citations_count", 0),
+                        "provenance_verified": data.get("provenance_verified", False),
+                        "macro_data": data.get("macro_data"),
+                        "llm_model_used": data.get("llm_model_used", "gpt-4o-mini")
+                    }
                 else:
                     if response.status_code == 401:
                         self._expire_session()
@@ -214,80 +180,6 @@ class MeetingIntelligenceClient:
                 "answer": f"⚠️ Unexpected error: {e!s}",
                 "citations": []
             }
-
-    def query_backend_stream(
-        self,
-        prompt: str,
-        project_id: str | None = None,
-        speaker: str | None = None,
-        meeting_id: str | None = None,
-        history: list[dict[str, str]] | None = None,
-    ) -> Iterator[dict[str, Any]]:
-        """
-        Like query_backend, but yields events while the answer is written (POST /api/v1/query/stream):
-        {"event": "status", "message"}, {"event": "token", "text"}, then one {"event": "final", "data"} whose data is
-        the dict query_backend returns. A failure is a single {"event": "error", **the failure dict query_backend
-        returns, "status_code"} (status_code is None when the backend could not be reached).
-        """
-        def failure(error: str, answer: str, status_code: int | None = None) -> dict[str, Any]:
-            return {"event": "error", "success": False, "error": error, "answer": answer, "citations": [], "status_code": status_code}
-
-        if not self.base_url:
-            yield failure(
-                "FASTAPI_BACKEND_URL is not configured in environment or Streamlit secrets.",
-                "⚠️ **Configuration Required**: `FASTAPI_BACKEND_URL` is not set. Please set it in Streamlit Secrets.",
-            )
-            return
-        payload = self._query_payload(prompt, project_id, speaker, meeting_id, history)
-
-        try:
-            # the timeout applies to each wait for the next piece of the stream, not to the whole answer
-            with httpx.Client(timeout=self.timeout) as client:
-                logger.info(f"[APIClient] Streaming query to {self.query_stream_url}: '{prompt}'")
-                with client.stream(
-                    "POST", self.query_stream_url, json=payload, headers={"Content-Type": "application/json", **self._auth_headers()}
-                ) as response:
-                    if response.status_code != 200:
-                        response.read()
-                        if response.status_code == 401:
-                            self._expire_session()
-                        detail = _error_detail(response)
-                        yield failure(
-                            f"Backend Error (HTTP {response.status_code}): {detail}",
-                            f"⚠️ An error occurred while communicating with the backend: {detail}",
-                            response.status_code,
-                        )
-                        return
-                    finished = False
-                    for event, data in _iter_sse(response.iter_lines()):
-                        if event == "status":
-                            yield {"event": "status", "message": data.get("message", "")}
-                        elif event == "token":
-                            yield {"event": "token", "text": data.get("text", "")}
-                        elif event == "final":
-                            finished = True
-                            yield {"event": "final", "data": self._query_result(data, prompt)}
-                        elif event == "error":
-                            finished = True
-                            message = data.get("message", "The answer could not be completed.")
-                            yield failure(message, f"⚠️ {message}")
-                    if not finished:
-                        yield failure(
-                            "The answer stream ended before it was complete.",
-                            "⚠️ The answer was interrupted before it was complete. Please try again.",
-                        )
-        except httpx.ConnectError:
-            yield failure(
-                f"Connection Refused: Cannot reach backend at {self.query_stream_url}",
-                f"🔌 **Backend Disconnected**: Please ensure the backend server is running and reachable at `{self.base_url}`.",
-            )
-        except httpx.TimeoutException:
-            yield failure(
-                f"Request Timed Out after {self.timeout}s",
-                "⏱️ **Request Timed Out**: The backend took longer than expected to process your query.",
-            )
-        except Exception as e:
-            yield failure(str(e), f"⚠️ Unexpected error: {e!s}")
 
     def list_projects(self) -> list[str]:
         """Fetches the list of all distinct project IDs."""

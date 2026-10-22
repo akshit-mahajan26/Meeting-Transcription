@@ -14,10 +14,7 @@ import os
 import re
 import time
 from datetime import UTC, datetime
-from typing import Any, Optional
-
-from langgraph.config import get_stream_writer
-from langgraph.types import RunnableConfig
+from typing import Any
 
 from ..core.config import settings
 from ..services.llm_client import get_llm_client
@@ -97,59 +94,6 @@ _SOURCES_LINE = re.compile(r"^[\s*_`>#-]*sources?[\s*_`]*:[\s*_`]*(.*?)[\s*_`]*$
 
 _INLINE_MARKER = re.compile(r"[ \t]*\[\s*\d+(?:\s*[,;\u2013-]\s*\d+)*\s*\]")
 
-_SOURCES_START = re.compile(r"^sources?[\s*_`]*(:.*)?$", re.IGNORECASE)
-_OPEN_MARKER = re.compile(r"[ \t]*(?:\[[\s\d,;\u2013-]*)?$")  # trailing spaces and/or an unfinished `[1, 2`: may belong to a marker
-_LINE_LEAD = " \t*_`>#-"
-
-
-def _could_be_sources_line(line: str) -> bool:
-    """True while `line` is still compatible with a `SOURCES: ...` line (so it must not be shown yet)."""
-    core = line.lstrip(_LINE_LEAD)
-    return not core or "sources".startswith(core.lower()) or bool(_SOURCES_START.match(core))
-
-
-class AnswerStreamFilter:
-    """
-    Cleans a streamed answer the way `split_sources_line` cleans the final one, so the reader never sees the
-    `SOURCES:` line or `[3]` excerpt markers flash by: lines that might still turn out to be a SOURCES line are
-    held back, and so are trailing spaces and an unfinished `[1, 2` marker. The final event carries the canonical text regardless.
-    """
-
-    def __init__(self) -> None:
-        self._pending = ""  # text of the current line that has not been released yet
-        self._live = False  # the current line cannot be a SOURCES line any more, so it is released as it arrives
-
-    def feed(self, delta: str) -> str:
-        """Takes the next text delta and returns the text that is safe to show now."""
-        out: list[str] = []
-        for ch in delta:
-            if ch == "\n":
-                out.append(self._finish_line())
-                continue
-            self._pending += ch
-            if not self._live and not _could_be_sources_line(self._pending):
-                self._live = True
-        if self._live:
-            cut = _OPEN_MARKER.search(self._pending)
-            ready, self._pending = (self._pending[: cut.start()], self._pending[cut.start():]) if cut else (self._pending, "")
-            out.append(_INLINE_MARKER.sub("", ready))
-        return "".join(out)
-
-    def flush(self) -> str:
-        """Called when the stream ends: releases whatever is still held."""
-        line, live = self._pending, self._live
-        self._pending, self._live = "", False
-        if not live and _SOURCES_LINE.match(line):
-            return ""
-        return _INLINE_MARKER.sub("", line)
-
-    def _finish_line(self) -> str:
-        line, live = self._pending, self._live
-        self._pending, self._live = "", False
-        if not live and _SOURCES_LINE.match(line):
-            return ""  # the SOURCES line and its newline are dropped
-        return _INLINE_MARKER.sub("", line) + "\n"
-
 
 def split_sources_line(answer: str, n_chunks: int) -> tuple[str, list[int] | None]:
     """
@@ -199,38 +143,14 @@ def split_sources_line(answer: str, n_chunks: int) -> tuple[str, list[int] | Non
 
 
 
-async def _stream_completion(llm_client: Any, messages: list[dict[str, str]], model: str) -> str:
-    """
-    Streams the completion to the graph's custom stream as {"type": "token", "text": ...} and returns the full text.
-    If the stream breaks, the answer is generated again in one piece; the final result then replaces what was shown.
-    """
-    write = get_stream_writer()
-    clean = AnswerStreamFilter()
-    parts: list[str] = []
-    try:
-        async for delta in llm_client.stream_chat_completion(messages=messages, model=model, max_tokens=4096, temperature=0.2):
-            parts.append(delta)
-            if text := clean.feed(delta):
-                write({"type": "token", "text": text})
-        if text := clean.flush():
-            write({"type": "token", "text": text})
-    except Exception as exc:
-        logger.warning(f"[LANGGRAPH: LLM_SYNTHESIS] Streaming failed, generating the answer in one piece: {exc}")
-        return await llm_client.generate_chat_completion(messages=messages, model=model, max_tokens=4096, temperature=0.2)
-    return "".join(parts).strip()
-
-
 # ============================================================================
 # Node 4: LLM Synthesis Node
 # ============================================================================
 
-# LangGraph only injects `config` for these exact annotations (a `RunnableConfig | None` string is silently skipped)
-async def llm_synthesis_node(state: ChatState, config: Optional[RunnableConfig] = None) -> dict[str, Any]:  # noqa: UP045
+async def llm_synthesis_node(state: ChatState) -> dict[str, Any]:
     """
     Node 4: LLM Synthesis with OpenRouter.
     Executes conversational completion strictly grounded in verified database catalog records and transcript excerpts.
-    When the run was started with `configurable.stream_answer`, the answer is also emitted token by token on the
-    graph's custom stream; the returned state update is the same either way.
     """
     llm_start = time.time()
     query = state.get("query", "").strip()
@@ -401,15 +321,12 @@ async def llm_synthesis_node(state: ChatState, config: Optional[RunnableConfig] 
     ]
 
     target_model = getattr(settings, "LLM_MODEL_NAME", None) or os.getenv("LLM_MODEL_NAME") or os.getenv("LLM_MODEL") or "gemini-2.5-flash"
-    if (config or {}).get("configurable", {}).get("stream_answer") and hasattr(llm_client, "stream_chat_completion"):
-        answer = await _stream_completion(llm_client, messages, target_model)
-    else:
-        answer = await llm_client.generate_chat_completion(
-            messages=messages,
-            model=target_model,
-            max_tokens=4096,
-            temperature=0.2,
-        )
+    answer = await llm_client.generate_chat_completion(
+        messages=messages,
+        model=target_model,
+        max_tokens=4096,
+        temperature=0.2,
+    )
 
     answer, used_sources = split_sources_line(answer, len(retrieved_chunks))
 

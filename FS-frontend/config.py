@@ -50,10 +50,6 @@ class FrontendConfig(BaseSettings):
         default=120.0,
         description="HTTP request timeout in seconds"
     )
-    STREAM_RESPONSES: bool = Field(
-        default=True,
-        description="Show answers as they are written (server-sent events). Off: wait for the complete answer."
-    )
 
     model_config = SettingsConfigDict(
         env_file=[".env", "FS-frontend/.env", "frontend/.env"],

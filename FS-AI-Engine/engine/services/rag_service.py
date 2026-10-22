@@ -8,13 +8,11 @@ Query service: runs a user question through the LangGraph chat pipeline
 from __future__ import annotations
 
 import logging
-from collections.abc import AsyncIterator
-from typing import Any
 
 from pydantic import BaseModel, Field
 
 from ..core.config import settings
-from ..graphs.chat_graph import run_chat_graph, stream_chat_graph
+from ..graphs.chat_graph import run_chat_graph
 
 logger = logging.getLogger("fs-ai-engine.rag_service")
 
@@ -41,7 +39,29 @@ class RAGQueryResponse(BaseModel):
     llm_model_used: str = getattr(settings, "LLM_MODEL_NAME", "gemini-2.5-flash")
 
 
-def _to_response(clean_query: str, graph_res: dict[str, Any]) -> RAGQueryResponse:
+async def process_user_query(
+    query: str,
+    user_id: str,
+    project_id: str | None = None,
+    meeting_id: str | None = None,
+    speaker: str | None = None,
+    history: list[dict[str, str]] | None = None,
+) -> RAGQueryResponse:
+    """Answer a question with the chat graph. Errors propagate to the caller (no hidden second pipeline)."""
+    clean_query = query.strip()
+    logger.info(
+        f"[QUERY] '{clean_query}' | Project: {project_id} | Meeting: {meeting_id} | Speaker: {speaker}"
+    )
+
+    graph_res = await run_chat_graph(
+        query=clean_query,
+        user_id=user_id,
+        project_id=project_id,
+        meeting_id=meeting_id,
+        speaker=speaker,
+        history=history,
+    )
+
     citations = [
         CitationModel(
             speaker=c.get("speaker", "Unknown"),
@@ -65,55 +85,3 @@ def _to_response(clean_query: str, graph_res: dict[str, Any]) -> RAGQueryRespons
         routing_reasoning=graph_res.get("reasoning", "LangGraph StateGraph Execution"),
         llm_model_used=graph_res.get("llm_model_used", getattr(settings, "LLM_MODEL_NAME", "gemini-2.5-flash")),
     )
-
-
-async def process_user_query(
-    query: str,
-    user_id: str,
-    project_id: str | None = None,
-    meeting_id: str | None = None,
-    speaker: str | None = None,
-    history: list[dict[str, str]] | None = None,
-) -> RAGQueryResponse:
-    """Answer a question with the chat graph. Errors propagate to the caller (no hidden second pipeline)."""
-    clean_query = query.strip()
-    logger.info(
-        f"[QUERY] '{clean_query}' | Project: {project_id} | Meeting: {meeting_id} | Speaker: {speaker}"
-    )
-
-    graph_res = await run_chat_graph(
-        query=clean_query,
-        user_id=user_id,
-        project_id=project_id,
-        meeting_id=meeting_id,
-        speaker=speaker,
-        history=history,
-    )
-    return _to_response(clean_query, graph_res)
-
-
-async def stream_user_query(
-    query: str,
-    user_id: str,
-    project_id: str | None = None,
-    meeting_id: str | None = None,
-    speaker: str | None = None,
-    history: list[dict[str, str]] | None = None,
-) -> AsyncIterator[tuple[str, Any]]:
-    """
-    Streaming twin of process_user_query. Yields ("status", text), ("token", text) and finally
-    ("final", RAGQueryResponse): the same response the non-streaming call returns.
-    """
-    clean_query = query.strip()
-    logger.info(
-        f"[QUERY:STREAM] '{clean_query}' | Project: {project_id} | Meeting: {meeting_id} | Speaker: {speaker}"
-    )
-    async for kind, payload in stream_chat_graph(
-        query=clean_query,
-        user_id=user_id,
-        project_id=project_id,
-        meeting_id=meeting_id,
-        speaker=speaker,
-        history=history,
-    ):
-        yield (kind, _to_response(clean_query, payload) if kind == "final" else payload)

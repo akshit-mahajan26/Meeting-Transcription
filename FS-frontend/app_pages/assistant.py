@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import streamlit as st
-from config import frontend_config
 from services.api_client import api_client
 from ui.components import hero, render_assistant_message
 from ui.scope import Scope, render_scope_panel
@@ -41,52 +40,6 @@ def _ask(question: str, scope: Scope, chat_history: list[dict[str, str]]) -> dic
         "routing_reasoning": res.get("routing_reasoning", ""),
         "llm_model_used": res.get("llm_model_used"),
     }
-
-
-def _ask_streaming(question: str, scope: Scope, chat_history: list[dict[str, str]]) -> dict:
-    """
-    Writes the answer into the chat as it arrives and returns the finished message, like _ask. The `final` event
-    holds the canonical answer and citations; the page re-renders from it after the stream, so any difference to
-    the streamed text (the model's source markers are removed there) settles on the canonical text.
-    """
-    status = st.empty()
-    status.caption("Thinking…")
-    final: dict = {}
-    failed: dict = {}
-
-    def tokens():
-        waiting = True
-        for event in api_client.query_backend_stream(
-            question, project_id=scope.project_id, speaker=scope.speaker, meeting_id=scope.meeting_id, history=chat_history
-        ):
-            kind = event["event"]
-            if kind == "status":
-                status.caption(event["message"])
-            elif kind == "token":
-                if waiting:
-                    status.empty()
-                    waiting = False
-                yield event["text"]
-            elif kind == "final":
-                final.update(event["data"])
-            else:
-                failed.update(event)
-
-    st.write_stream(tokens())
-    status.empty()
-
-    if final:
-        return {
-            "role": "assistant",
-            "content": final.get("answer", "No response synthesized."),
-            "citations": final.get("citations", []),
-            "routing_mode": final.get("routing_mode"),
-            "routing_reasoning": final.get("routing_reasoning", ""),
-            "llm_model_used": final.get("llm_model_used"),
-        }
-    if failed.get("status_code") in (404, 405):  # a backend without the streaming endpoint: use the plain request
-        return _ask(question, scope, chat_history)
-    return {"role": "assistant", "error": failed.get("error", "An error occurred."), "content": failed.get("answer", ""), "citations": []}
 
 
 def _render(msg: dict) -> None:
@@ -134,11 +87,8 @@ def render() -> None:
         with box:
             _render(user_msg)
             with st.chat_message("assistant", avatar=":material/smart_toy:"):
-                if frontend_config.STREAM_RESPONSES:
-                    answer = _ask_streaming(question, scope, chat_history)
-                else:
-                    with st.spinner("Searching transcripts and synthesizing a grounded answer…"):
-                        answer = _ask(question, scope, chat_history)
+                with st.spinner("Searching transcripts and synthesizing a grounded answer…"):
+                    answer = _ask(question, scope, chat_history)
         messages.append(answer)
         st.rerun()  # history loop above renders the stored answer
 
