@@ -1,0 +1,578 @@
+{
+  "FS-AI-Engine/conftest.py": {
+    "mtime": 1791463504.0884306,
+    "seen": 1793353833.735878,
+    "ast_hash": "ff2b61e73d42664c9c9862909ee02317",
+    "semantic_hash": "ff2b61e73d42664c9c9862909ee02317"
+  },
+  "FS-AI-Engine/engine/__init__.py": {
+    "mtime": 1790659015.4008517,
+    "seen": 1793353833.7358809,
+    "ast_hash": "fba65708ca126fe9f8362434aa1412c9",
+    "semantic_hash": "fba65708ca126fe9f8362434aa1412c9"
+  },
+  "FS-AI-Engine/engine/api/__init__.py": {
+    "mtime": 1790659075.6961849,
+    "seen": 1793353833.735882,
+    "ast_hash": "d8fe4413b149976f3ed86e419870b6b2",
+    "semantic_hash": "d8fe4413b149976f3ed86e419870b6b2"
+  },
+  "FS-AI-Engine/engine/api/routers/__init__.py": {
+    "mtime": 1791463504.0887294,
+    "seen": 1793353833.735882,
+    "ast_hash": "46cf35583085829d9d2a1ac601d5c9f3",
+    "semantic_hash": "46cf35583085829d9d2a1ac601d5c9f3"
+  },
+  "FS-AI-Engine/engine/api/routers/engine.py": {
+    "mtime": 1792675291.7625897,
+    "seen": 1793353833.735883,
+    "ast_hash": "3ff57228821c8b331d5419e0ca7cc559",
+    "semantic_hash": "3ff57228821c8b331d5419e0ca7cc559"
+  },
+  "FS-AI-Engine/engine/api/routes.py": {
+    "mtime": 1792475786.9694266,
+    "seen": 1793353833.735883,
+    "ast_hash": "fdd0d8fd7b750c6143b422cd578d6c7d",
+    "semantic_hash": "fdd0d8fd7b750c6143b422cd578d6c7d"
+  },
+  "FS-AI-Engine/engine/core/__init__.py": {
+    "mtime": 1790681117.2091815,
+    "seen": 1793353833.735884,
+    "ast_hash": "4f3257557908fdfb60d651f8f0d984db",
+    "semantic_hash": "4f3257557908fdfb60d651f8f0d984db"
+  },
+  "FS-AI-Engine/engine/core/config.py": {
+    "mtime": 1792580383.5951366,
+    "seen": 1793353833.735884,
+    "ast_hash": "307f8fc635cd4d18f671b3e9d41b16c3",
+    "semantic_hash": "307f8fc635cd4d18f671b3e9d41b16c3"
+  },
+  "FS-AI-Engine/engine/core/database.py": {
+    "mtime": 1792567369.250737,
+    "seen": 1793353833.7358851,
+    "ast_hash": "6c5c7e138d1dc96bb94591cc141c1e99",
+    "semantic_hash": "6c5c7e138d1dc96bb94591cc141c1e99"
+  },
+  "FS-AI-Engine/engine/core/security.py": {
+    "mtime": 1791967717.1006522,
+    "seen": 1793353833.7358851,
+    "ast_hash": "f4bdd0e02e9152b4c59520440f9b1738",
+    "semantic_hash": "f4bdd0e02e9152b4c59520440f9b1738"
+  },
+  "FS-AI-Engine/engine/graphs/__init__.py": {
+    "mtime": 1791967717.100882,
+    "seen": 1793353833.7358851,
+    "ast_hash": "9e86f5aae01ce76a8d7670aace793163",
+    "semantic_hash": "9e86f5aae01ce76a8d7670aace793163"
+  },
+  "FS-AI-Engine/engine/graphs/chat_analysis.py": {
+    "mtime": 1792567369.251187,
+    "seen": 1793353833.735886,
+    "ast_hash": "62970d2ffb4714301dccbfbc4eb6702f",
+    "semantic_hash": "62970d2ffb4714301dccbfbc4eb6702f"
+  },
+  "FS-AI-Engine/engine/graphs/chat_citations.py": {
+    "mtime": 1792567369.25153,
+    "seen": 1793353833.735886,
+    "ast_hash": "7a1feebbc495ffc6f9260175666bd5f4",
+    "semantic_hash": "7a1feebbc495ffc6f9260175666bd5f4"
+  },
+  "FS-AI-Engine/engine/graphs/chat_entities.py": {
+    "mtime": 1792498173.2293303,
+    "seen": 1793353833.735887,
+    "ast_hash": "3fe1a3f2b434aa2228902c22ede9e0be",
+    "semantic_hash": "3fe1a3f2b434aa2228902c22ede9e0be"
+  },
+  "FS-AI-Engine/engine/graphs/chat_graph.py": {
+    "mtime": 1792675291.7632215,
+    "seen": 1793353833.735887,
+    "ast_hash": "d6623485d999859dfaeb974e7841c02d",
+    "semantic_hash": "d6623485d999859dfaeb974e7841c02d"
+  },
+  "FS-AI-Engine/engine/graphs/chat_nodes.py": {
+    "mtime": 1792675291.7636106,
+    "seen": 1793353833.7358878,
+    "ast_hash": "7f9433a63b93fdb13164038d15eb099a",
+    "semantic_hash": "7f9433a63b93fdb13164038d15eb099a"
+  },
+  "FS-AI-Engine/engine/graphs/chat_query.py": {
+    "mtime": 1792675291.7639427,
+    "seen": 1793353833.7358878,
+    "ast_hash": "3f576c039354b840a153a1c50f55d8f7",
+    "semantic_hash": "3f576c039354b840a153a1c50f55d8f7"
+  },
+  "FS-AI-Engine/engine/graphs/chat_records.py": {
+    "mtime": 1792498173.2313828,
+    "seen": 1793353833.735889,
+    "ast_hash": "59396d599870ca57b140708d5a8c0bc2",
+    "semantic_hash": "59396d599870ca57b140708d5a8c0bc2"
+  },
+  "FS-AI-Engine/engine/graphs/chat_retrieval.py": {
+    "mtime": 1792567369.2520735,
+    "seen": 1793353833.735889,
+    "ast_hash": "ac2158bed7ead612a9970f23095bc707",
+    "semantic_hash": "ac2158bed7ead612a9970f23095bc707"
+  },
+  "FS-AI-Engine/engine/graphs/chat_rewrite.py": {
+    "mtime": 1792567369.2522476,
+    "seen": 1793353833.73589,
+    "ast_hash": "6e5836b820bad0e1a488d2058ac3d1ca",
+    "semantic_hash": "6e5836b820bad0e1a488d2058ac3d1ca"
+  },
+  "FS-AI-Engine/engine/graphs/chat_sources.py": {
+    "mtime": 1792675291.7643874,
+    "seen": 1793353833.73589,
+    "ast_hash": "ebccf7b333e9271393999060c957d8fa",
+    "semantic_hash": "ebccf7b333e9271393999060c957d8fa"
+  },
+  "FS-AI-Engine/engine/graphs/chat_subgraphs.py": {
+    "mtime": 1792675291.7646503,
+    "seen": 1793353833.73589,
+    "ast_hash": "6af186c8f7d14cad85f0dc86604f6968",
+    "semantic_hash": "6af186c8f7d14cad85f0dc86604f6968"
+  },
+  "FS-AI-Engine/engine/graphs/chat_synthesis.py": {
+    "mtime": 1792675291.7649946,
+    "seen": 1793353833.7358909,
+    "ast_hash": "3fdd014a2633cbeb4bee5926701c1b59",
+    "semantic_hash": "3fdd014a2633cbeb4bee5926701c1b59"
+  },
+  "FS-AI-Engine/engine/main.py": {
+    "mtime": 1792487299.8835275,
+    "seen": 1793353833.7358909,
+    "ast_hash": "37d5e1378426fddc37792589074ae5eb",
+    "semantic_hash": "37d5e1378426fddc37792589074ae5eb"
+  },
+  "FS-AI-Engine/engine/models/__init__.py": {
+    "mtime": 1792475786.9734654,
+    "seen": 1793353833.735892,
+    "ast_hash": "3a361658691006dc1c342e709f773104",
+    "semantic_hash": "3a361658691006dc1c342e709f773104"
+  },
+  "FS-AI-Engine/engine/models/schemas.py": {
+    "mtime": 1792475786.973767,
+    "seen": 1793353833.735892,
+    "ast_hash": "cce4e6b4b158b7269ae1b09d5490b039",
+    "semantic_hash": "cce4e6b4b158b7269ae1b09d5490b039"
+  },
+  "FS-AI-Engine/engine/services/__init__.py": {
+    "mtime": 1791967717.103151,
+    "seen": 1793353833.735893,
+    "ast_hash": "244200f4eccb5762aa0783f996cbcfa3",
+    "semantic_hash": "244200f4eccb5762aa0783f996cbcfa3"
+  },
+  "FS-AI-Engine/engine/services/embedding_service.py": {
+    "mtime": 1792475786.9742959,
+    "seen": 1793353833.735893,
+    "ast_hash": "b6296036d4e1737a10b50617eb4ceff4",
+    "semantic_hash": "b6296036d4e1737a10b50617eb4ceff4"
+  },
+  "FS-AI-Engine/engine/services/llm_client.py": {
+    "mtime": 1792675291.7653868,
+    "seen": 1793353833.735894,
+    "ast_hash": "dbf59f7bab5943e7cce896cb29484347",
+    "semantic_hash": "dbf59f7bab5943e7cce896cb29484347"
+  },
+  "FS-AI-Engine/engine/services/normalizer.py": {
+    "mtime": 1792580383.5958467,
+    "seen": 1793353833.735894,
+    "ast_hash": "8ea816a7eec7a2a8890f85fd724355a1",
+    "semantic_hash": "8ea816a7eec7a2a8890f85fd724355a1"
+  },
+  "FS-AI-Engine/engine/services/rag_service.py": {
+    "mtime": 1792675291.7656803,
+    "seen": 1793353833.7358952,
+    "ast_hash": "c076af02ec83afa7000f46dea0c3b6b9",
+    "semantic_hash": "c076af02ec83afa7000f46dea0c3b6b9"
+  },
+  "FS-AI-Engine/engine/services/segmenter.py": {
+    "mtime": 1792475786.9754713,
+    "seen": 1793353833.7358952,
+    "ast_hash": "90cb8a7fddbbc7d6828f19e494c3327e",
+    "semantic_hash": "90cb8a7fddbbc7d6828f19e494c3327e"
+  },
+  "FS-AI-Engine/engine/services/signal_tagger.py": {
+    "mtime": 1791967717.1049,
+    "seen": 1793353833.735896,
+    "ast_hash": "c2552c12360d20a767b0d3003c46ecb7",
+    "semantic_hash": "c2552c12360d20a767b0d3003c46ecb7"
+  },
+  "FS-AI-Engine/engine/services/summarizer.py": {
+    "mtime": 1792475786.9758584,
+    "seen": 1793353833.735896,
+    "ast_hash": "5ff4364751f37d5324da6dc75ce08fee",
+    "semantic_hash": "5ff4364751f37d5324da6dc75ce08fee"
+  },
+  "FS-AI-Engine/githooks/pre-commit": {
+    "mtime": 1791967717.1052914,
+    "seen": 1793353833.735896,
+    "ast_hash": "050719ad799815a0e34d191ff4228826",
+    "semantic_hash": "050719ad799815a0e34d191ff4228826"
+  },
+  "FS-AI-Engine/pyproject.toml": {
+    "mtime": 1791967717.1054626,
+    "seen": 1793353833.735897,
+    "ast_hash": "7edfc2fe1ed27d28b5766961eed75f54",
+    "semantic_hash": "7edfc2fe1ed27d28b5766961eed75f54"
+  },
+  "FS-backend/alembic/env.py": {
+    "mtime": 1792567369.2530549,
+    "seen": 1793353833.735897,
+    "ast_hash": "bad875bfe14f5e189d3a969d241b6255",
+    "semantic_hash": "bad875bfe14f5e189d3a969d241b6255"
+  },
+  "FS-backend/alembic/versions/a3f1c9d27b40_add_users_and_ownership.py": {
+    "mtime": 1792475787.9923031,
+    "seen": 1793353833.735898,
+    "ast_hash": "b169f1e2002f9967f95a08a1375f6640",
+    "semantic_hash": "b169f1e2002f9967f95a08a1375f6640"
+  },
+  "FS-backend/alembic/versions/e0d6e74c6561_initial_schema.py": {
+    "mtime": 1791967717.108625,
+    "seen": 1793353833.735898,
+    "ast_hash": "df5c38822a5be7f98b777982a92edd82",
+    "semantic_hash": "df5c38822a5be7f98b777982a92edd82"
+  },
+  "FS-backend/app/__init__.py": {
+    "mtime": 1790659118.7779422,
+    "seen": 1793353833.735899,
+    "ast_hash": "22d124e48b4a0d19ce7b633036400190",
+    "semantic_hash": "22d124e48b4a0d19ce7b633036400190"
+  },
+  "FS-backend/app/api/__init__.py": {
+    "mtime": 1790659198.336889,
+    "seen": 1793353833.735899,
+    "ast_hash": "bc5e594b5c225cfc43e1eda1559b5b1e",
+    "semantic_hash": "bc5e594b5c225cfc43e1eda1559b5b1e"
+  },
+  "FS-backend/app/api/deps.py": {
+    "mtime": 1791967717.1087615,
+    "seen": 1793353833.7359,
+    "ast_hash": "a50337d52e0eba7b6ce5ed287b7bda17",
+    "semantic_hash": "a50337d52e0eba7b6ce5ed287b7bda17"
+  },
+  "FS-backend/app/api/v1/__init__.py": {
+    "mtime": 1790659195.2537658,
+    "seen": 1793353833.7359,
+    "ast_hash": "38b850e8e45ec5f340b381e6f257c3d3",
+    "semantic_hash": "38b850e8e45ec5f340b381e6f257c3d3"
+  },
+  "FS-backend/app/api/v1/endpoints/__init__.py": {
+    "mtime": 1792475787.9924452,
+    "seen": 1793353833.7359009,
+    "ast_hash": "d41d8cd98f00b204e9800998ecf8427e",
+    "semantic_hash": "d41d8cd98f00b204e9800998ecf8427e"
+  },
+  "FS-backend/app/api/v1/endpoints/auth.py": {
+    "mtime": 1792567369.2532282,
+    "seen": 1793353833.7359009,
+    "ast_hash": "db227ad610cc7a14e8c6e366c685bd8c",
+    "semantic_hash": "db227ad610cc7a14e8c6e366c685bd8c"
+  },
+  "FS-backend/app/api/v1/endpoints/ingest.py": {
+    "mtime": 1792567369.2535293,
+    "seen": 1793353833.735902,
+    "ast_hash": "d1482ed8ae1389f5a9d0afbb56b9c966",
+    "semantic_hash": "d1482ed8ae1389f5a9d0afbb56b9c966"
+  },
+  "FS-backend/app/api/v1/endpoints/meetings.py": {
+    "mtime": 1791967717.1098883,
+    "seen": 1793353833.735902,
+    "ast_hash": "690290cf167c13bb505dab17a118eb15",
+    "semantic_hash": "690290cf167c13bb505dab17a118eb15"
+  },
+  "FS-backend/app/api/v1/endpoints/query.py": {
+    "mtime": 1792675291.7659786,
+    "seen": 1793353833.735903,
+    "ast_hash": "fc91f1305e3d7356bc2f6ab6911fdfa5",
+    "semantic_hash": "fc91f1305e3d7356bc2f6ab6911fdfa5"
+  },
+  "FS-backend/app/api/v1/router.py": {
+    "mtime": 1792475787.9944775,
+    "seen": 1793353833.735903,
+    "ast_hash": "b7b1678f9305bfd2e90eebdcef6b876a",
+    "semantic_hash": "b7b1678f9305bfd2e90eebdcef6b876a"
+  },
+  "FS-backend/app/core/__init__.py": {
+    "mtime": 1791967717.1104493,
+    "seen": 1793353833.735903,
+    "ast_hash": "1d0d89a27da097ed568b8a7a9754c981",
+    "semantic_hash": "1d0d89a27da097ed568b8a7a9754c981"
+  },
+  "FS-backend/app/core/config.py": {
+    "mtime": 1792567369.254031,
+    "seen": 1793353833.735904,
+    "ast_hash": "fe152635666052a7c56754653269aa3f",
+    "semantic_hash": "fe152635666052a7c56754653269aa3f"
+  },
+  "FS-backend/app/core/database.py": {
+    "mtime": 1792567369.2543294,
+    "seen": 1793353833.735904,
+    "ast_hash": "6057ab496018c2f183c284f1808d0747",
+    "semantic_hash": "6057ab496018c2f183c284f1808d0747"
+  },
+  "FS-backend/app/core/logging_config.py": {
+    "mtime": 1792580383.5965197,
+    "seen": 1793353833.735905,
+    "ast_hash": "92c030966ac5a1cb9e347945fdc65960",
+    "semantic_hash": "92c030966ac5a1cb9e347945fdc65960"
+  },
+  "FS-backend/app/core/schema_versioning.py": {
+    "mtime": 1791967717.1113672,
+    "seen": 1793353833.735905,
+    "ast_hash": "e8c65a7f417288b6180088851531fc4e",
+    "semantic_hash": "e8c65a7f417288b6180088851531fc4e"
+  },
+  "FS-backend/app/core/security.py": {
+    "mtime": 1791967717.111709,
+    "seen": 1793353833.7359061,
+    "ast_hash": "256f7677526b1950c2141436dd3b60c8",
+    "semantic_hash": "256f7677526b1950c2141436dd3b60c8"
+  },
+  "FS-backend/app/main.py": {
+    "mtime": 1792487299.8844407,
+    "seen": 1793353833.7359061,
+    "ast_hash": "a616df12c41b3d71e53de960842ee93f",
+    "semantic_hash": "a616df12c41b3d71e53de960842ee93f"
+  },
+  "FS-backend/app/schemas/__init__.py": {
+    "mtime": 1791967717.1121798,
+    "seen": 1793353833.7359061,
+    "ast_hash": "77af3cc97742ba27285c28185d2de8b2",
+    "semantic_hash": "77af3cc97742ba27285c28185d2de8b2"
+  },
+  "FS-backend/app/schemas/auth.py": {
+    "mtime": 1791967717.1123023,
+    "seen": 1793353833.735907,
+    "ast_hash": "3b9460224ea9becac3a2e9f3bb94a1f4",
+    "semantic_hash": "3b9460224ea9becac3a2e9f3bb94a1f4"
+  },
+  "FS-backend/app/schemas/models.py": {
+    "mtime": 1791967717.112492,
+    "seen": 1793353833.735907,
+    "ast_hash": "dfca6cb03ce97006beeb1c6946e65473",
+    "semantic_hash": "dfca6cb03ce97006beeb1c6946e65473"
+  },
+  "FS-backend/app/services/__init__.py": {
+    "mtime": 1790659172.1941123,
+    "seen": 1793353833.735908,
+    "ast_hash": "729fe983a41581ebd0d2830946f31a87",
+    "semantic_hash": "729fe983a41581ebd0d2830946f31a87"
+  },
+  "FS-backend/app/services/fireflies_client.py": {
+    "mtime": 1791967717.1127944,
+    "seen": 1793353833.735908,
+    "ast_hash": "34f857b7ea661eb08228dc60e2d287da",
+    "semantic_hash": "34f857b7ea661eb08228dc60e2d287da"
+  },
+  "FS-backend/app/services/ingestion_failures.py": {
+    "mtime": 1792475787.9949267,
+    "seen": 1793353833.735908,
+    "ast_hash": "96ecb3636a8d859826c00d4bbba5cfd1",
+    "semantic_hash": "96ecb3636a8d859826c00d4bbba5cfd1"
+  },
+  "FS-backend/app/services/meeting_service.py": {
+    "mtime": 1791967717.113261,
+    "seen": 1793353833.7359092,
+    "ast_hash": "93e2a1f5692538631c2c9f72c004066e",
+    "semantic_hash": "93e2a1f5692538631c2c9f72c004066e"
+  },
+  "FS-backend/app/services/ownership.py": {
+    "mtime": 1792041348.263545,
+    "seen": 1793353833.7359092,
+    "ast_hash": "e507342de29e24e5bc0381f8965f4fb5",
+    "semantic_hash": "e507342de29e24e5bc0381f8965f4fb5"
+  },
+  "FS-backend/app/services/pipeline_orchestrator.py": {
+    "mtime": 1792487299.8852136,
+    "seen": 1793353833.73591,
+    "ast_hash": "24490e8c17a8f34d965c49bb20af8ee1",
+    "semantic_hash": "24490e8c17a8f34d965c49bb20af8ee1"
+  },
+  "FS-backend/githooks/pre-commit": {
+    "mtime": 1791967717.1140661,
+    "seen": 1793353833.73591,
+    "ast_hash": "050719ad799815a0e34d191ff4228826",
+    "semantic_hash": "050719ad799815a0e34d191ff4228826"
+  },
+  "FS-backend/pyproject.toml": {
+    "mtime": 1791967717.1142764,
+    "seen": 1793353833.735911,
+    "ast_hash": "34902edbcc5598701f170c1f129b0cd1",
+    "semantic_hash": "34902edbcc5598701f170c1f129b0cd1"
+  },
+  "FS-frontend/.devcontainer/devcontainer.json": {
+    "mtime": 1791967717.1159227,
+    "seen": 1793353833.735911,
+    "ast_hash": "8f4e3db3a5377558da32c1cbcdc723ac",
+    "semantic_hash": "8f4e3db3a5377558da32c1cbcdc723ac"
+  },
+  "FS-frontend/__init__.py": {
+    "mtime": 1790742843.0919833,
+    "seen": 1793353833.7359118,
+    "ast_hash": "dfee1e83943a1c703bda5cbcb2771f09",
+    "semantic_hash": "dfee1e83943a1c703bda5cbcb2771f09"
+  },
+  "FS-frontend/app.py": {
+    "mtime": 1792487299.8838506,
+    "seen": 1793353833.7359118,
+    "ast_hash": "19cc77f607ab9caacef3f4ad640b3301",
+    "semantic_hash": "19cc77f607ab9caacef3f4ad640b3301"
+  },
+  "FS-frontend/app_pages/__init__.py": {
+    "mtime": 1791967717.1166313,
+    "seen": 1793353833.7359118,
+    "ast_hash": "d41d8cd98f00b204e9800998ecf8427e",
+    "semantic_hash": "d41d8cd98f00b204e9800998ecf8427e"
+  },
+  "FS-frontend/app_pages/assistant.py": {
+    "mtime": 1792675291.7665675,
+    "seen": 1793353833.735913,
+    "ast_hash": "26dedc2010a886a024187b98ed83e1df",
+    "semantic_hash": "26dedc2010a886a024187b98ed83e1df"
+  },
+  "FS-frontend/app_pages/ingest.py": {
+    "mtime": 1792475790.0975943,
+    "seen": 1793353833.735913,
+    "ast_hash": "b56b30598c7d145b3037cf28206bfa9f",
+    "semantic_hash": "b56b30598c7d145b3037cf28206bfa9f"
+  },
+  "FS-frontend/app_pages/meetings.py": {
+    "mtime": 1792486418.7481482,
+    "seen": 1793353833.735914,
+    "ast_hash": "bf9cea08eace4843bdc8fa074da669c1",
+    "semantic_hash": "bf9cea08eace4843bdc8fa074da669c1"
+  },
+  "FS-frontend/app_pages/overview.py": {
+    "mtime": 1792475790.0984108,
+    "seen": 1793353833.735914,
+    "ast_hash": "9fe36e64ee107a1d29e33974429c9ebe",
+    "semantic_hash": "9fe36e64ee107a1d29e33974429c9ebe"
+  },
+  "FS-frontend/config.py": {
+    "mtime": 1792675291.7669055,
+    "seen": 1793353833.735915,
+    "ast_hash": "fcfad7da5f6f619248236102f54229ec",
+    "semantic_hash": "fcfad7da5f6f619248236102f54229ec"
+  },
+  "FS-frontend/githooks/pre-commit": {
+    "mtime": 1791967717.1177397,
+    "seen": 1793353833.735915,
+    "ast_hash": "050719ad799815a0e34d191ff4228826",
+    "semantic_hash": "050719ad799815a0e34d191ff4228826"
+  },
+  "FS-frontend/pyproject.toml": {
+    "mtime": 1791967717.1178892,
+    "seen": 1793353833.735915,
+    "ast_hash": "4647c5103e8f758447d585d92b233bfe",
+    "semantic_hash": "4647c5103e8f758447d585d92b233bfe"
+  },
+  "FS-frontend/services/__init__.py": {
+    "mtime": 1791967717.1182027,
+    "seen": 1793353833.7359161,
+    "ast_hash": "4759c3753dbcf7526a8c18e796b66f15",
+    "semantic_hash": "4759c3753dbcf7526a8c18e796b66f15"
+  },
+  "FS-frontend/services/api_client.py": {
+    "mtime": 1792675291.767246,
+    "seen": 1793353833.7359161,
+    "ast_hash": "3e57d6ff6f380f058bfc8bcfe2bfaad0",
+    "semantic_hash": "3e57d6ff6f380f058bfc8bcfe2bfaad0"
+  },
+  "FS-frontend/ui/__init__.py": {
+    "mtime": 1791967717.1185308,
+    "seen": 1793353833.735917,
+    "ast_hash": "d41d8cd98f00b204e9800998ecf8427e",
+    "semantic_hash": "d41d8cd98f00b204e9800998ecf8427e"
+  },
+  "FS-frontend/ui/auth.py": {
+    "mtime": 1792486418.7519321,
+    "seen": 1793353833.735917,
+    "ast_hash": "b418bdd3388d031a902e257463d98014",
+    "semantic_hash": "b418bdd3388d031a902e257463d98014"
+  },
+  "FS-frontend/ui/components.py": {
+    "mtime": 1792556665.172451,
+    "seen": 1793353833.735918,
+    "ast_hash": "6c3ab90e6bb0e1b6f69bf4f1ba23e0d4",
+    "semantic_hash": "6c3ab90e6bb0e1b6f69bf4f1ba23e0d4"
+  },
+  "FS-frontend/ui/nav.py": {
+    "mtime": 1791967717.1194565,
+    "seen": 1793353833.735918,
+    "ast_hash": "8e73e5f7f9858c5629f43eca9ed61ab3",
+    "semantic_hash": "8e73e5f7f9858c5629f43eca9ed61ab3"
+  },
+  "FS-frontend/ui/scope.py": {
+    "mtime": 1792486418.7480736,
+    "seen": 1793353833.735919,
+    "ast_hash": "49b0778fa9765cd9a744ac93fa90921f",
+    "semantic_hash": "49b0778fa9765cd9a744ac93fa90921f"
+  },
+  "FS-frontend/ui/shell.py": {
+    "mtime": 1792486418.768661,
+    "seen": 1793353833.735919,
+    "ast_hash": "aff62dc632bbb225c6b0f91904db7ce3",
+    "semantic_hash": "aff62dc632bbb225c6b0f91904db7ce3"
+  },
+  "FS-frontend/ui/state.py": {
+    "mtime": 1791967717.1197495,
+    "seen": 1793353833.7359202,
+    "ast_hash": "863ea344964601857975f31b1591e2d6",
+    "semantic_hash": "863ea344964601857975f31b1591e2d6"
+  },
+  "FS-frontend/ui/styles.py": {
+    "mtime": 1792498168.3716486,
+    "seen": 1793353833.7359202,
+    "ast_hash": "7d7e0b925753b2f48abafd7d9c3ae45d",
+    "semantic_hash": "7d7e0b925753b2f48abafd7d9c3ae45d"
+  },
+  "FS-frontend/utils/__init__.py": {
+    "mtime": 1791967717.120043,
+    "seen": 1793353833.735921,
+    "ast_hash": "d41d8cd98f00b204e9800998ecf8427e",
+    "semantic_hash": "d41d8cd98f00b204e9800998ecf8427e"
+  },
+  "FS-frontend/utils/formatting.py": {
+    "mtime": 1792064910.8895862,
+    "seen": 1793353833.735921,
+    "ast_hash": "418b4306f7624032a9cbb5939cef3dc2",
+    "semantic_hash": "418b4306f7624032a9cbb5939cef3dc2"
+  },
+  "skills-lock.json": {
+    "mtime": 1792474007.2558918,
+    "seen": 1793353833.7359219,
+    "ast_hash": "f10ffc0bfd4b807e97cf9d65f3bcc385",
+    "semantic_hash": "f10ffc0bfd4b807e97cf9d65f3bcc385"
+  },
+  ".gsd/ARCHITECTURE.md": {
+    "mtime": 1792567369.2491713,
+    "seen": 1793353833.7359219,
+    "ast_hash": "b52451664c0ff187ee7562feb8b627df",
+    "semantic_hash": "b52451664c0ff187ee7562feb8b627df"
+  },
+  ".gsd/STACK.md": {
+    "mtime": 1792580383.5940042,
+    "seen": 1793353833.7359219,
+    "ast_hash": "01f9a629f69fdb17f5ad79322cc91ced",
+    "semantic_hash": "01f9a629f69fdb17f5ad79322cc91ced"
+  },
+  ".gsd/STATE.md": {
+    "mtime": 1792134832.8278675,
+    "seen": 1793353833.735923,
+    "ast_hash": "e2b4a29a09a07a3da05d3ec690eb6e68",
+    "semantic_hash": "e2b4a29a09a07a3da05d3ec690eb6e68"
+  },
+  "docs/architecture_notion.md": {
+    "mtime": 1792567369.2549856,
+    "seen": 1793353833.735923,
+    "ast_hash": "cb9a4f3558cadc373a6f097636976d33",
+    "semantic_hash": "cb9a4f3558cadc373a6f097636976d33"
+  },
+  "docs/Project_Deep_Dive.pdf": {
+    "mtime": 1792580383.600213,
+    "seen": 1793353833.735924,
+    "ast_hash": "0ddc4a558ee223af1736375495c7e254",
+    "semantic_hash": "0ddc4a558ee223af1736375495c7e254"
+  }
+}
