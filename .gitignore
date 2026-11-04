@@ -19,12 +19,8 @@ ENV/
 .uv/
 
 # ==============================================================================
-# Tests, Test Suites, Coverage & Linters
+# Test Caches, Coverage & Linters
 # ==============================================================================
-tests/
-*/tests/
-test_*.py
-*_test.py
 .pytest_cache/
 */.pytest_cache/
 .coverage
@@ -79,20 +75,11 @@ dist/
 .DS_Store
 .vscode/
 .idea/
-adapters
-.agents/
-.agent/
 .claude/
-.gemini/
-.gsd/
 evaluations/
 scripts/
-GSD-STYLE.md
-model_capabilities.yaml
-PROJECT_RULES.md
-.gravitas/
-Gravitas
-Gravitas/
+ai-tooling-archive/
+graphify-out/
 
 # Transcripts JSON dumps
 transcripts/

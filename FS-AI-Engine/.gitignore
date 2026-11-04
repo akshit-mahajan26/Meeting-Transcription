@@ -10,8 +10,7 @@ __pycache__/
 .env.*
 !.env.example
 
-# Tests & Caches
-tests/
+# Test caches
 .pytest_cache/
 
 # Logs & Databases

@@ -13,8 +13,7 @@ __pycache__/
 # Streamlit Secrets
 .streamlit/secrets.toml
 
-# Tests & Caches
-tests/
+# Test caches
 .pytest_cache/
 
 # Logs & Databases

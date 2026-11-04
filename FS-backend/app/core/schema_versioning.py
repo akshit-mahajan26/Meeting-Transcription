@@ -19,17 +19,15 @@ def _get_comment_heads(connection: Any) -> tuple[str, ...]:
     """Retrieve revision heads stored in the PostgreSQL schema comment."""
     if connection is None:
         return ()
-    try:
-        sql = text(
-            "SELECT obj_description(oid, 'pg_namespace') "
-            "FROM pg_namespace WHERE nspname = :schema_name"
-        )
-        res = connection.execute(sql, {"schema_name": SCHEMA_NAME}).scalar()
-        if res and res.startswith(COMMENT_PREFIX):
-            rev_str = res[len(COMMENT_PREFIX) :].strip()
-            return tuple(r for r in rev_str.split(",") if r)
-    except Exception:
-        pass
+    # A failed read must raise: answering "no heads" would make Alembic re-run every migration
+    sql = text(
+        "SELECT obj_description(oid, 'pg_namespace') "
+        "FROM pg_namespace WHERE nspname = :schema_name"
+    )
+    res = connection.execute(sql, {"schema_name": SCHEMA_NAME}).scalar()
+    if res and res.startswith(COMMENT_PREFIX):
+        rev_str = res[len(COMMENT_PREFIX) :].strip()
+        return tuple(r for r in rev_str.split(",") if r)
     return ()
 
 
@@ -47,27 +45,24 @@ def _migrate_existing_table(connection: Any, impl: Any) -> None:
     """If an alembic_version table exists, migrate its version to the comment and drop the table."""
     if connection is None:
         return
-    try:
-        check_table = connection.execute(
-            text(
-                "SELECT EXISTS (SELECT FROM information_schema.tables "
-                "WHERE table_schema = :schema_name AND table_name = 'alembic_version')"
-            ),
-            {"schema_name": SCHEMA_NAME},
-        ).scalar()
+    check_table = connection.execute(
+        text(
+            "SELECT EXISTS (SELECT FROM information_schema.tables "
+            "WHERE table_schema = :schema_name AND table_name = 'alembic_version')"
+        ),
+        {"schema_name": SCHEMA_NAME},
+    ).scalar()
 
-        if check_table:
-            row = connection.execute(
-                text(f"SELECT version_num FROM {SCHEMA_NAME}.alembic_version LIMIT 1")
-            ).scalar()
-            if row:
-                existing = _get_comment_heads(connection)
-                if not existing:
-                    val = f"{COMMENT_PREFIX}{row}"
-                    impl._exec(text(f"COMMENT ON SCHEMA {SCHEMA_NAME} IS '{val}'"))
-            impl._exec(text(f"DROP TABLE IF EXISTS {SCHEMA_NAME}.alembic_version"))
-    except Exception:
-        pass
+    if check_table:
+        row = connection.execute(
+            text(f"SELECT version_num FROM {SCHEMA_NAME}.alembic_version LIMIT 1")
+        ).scalar()
+        if row:
+            existing = _get_comment_heads(connection)
+            if not existing:
+                val = f"{COMMENT_PREFIX}{row}"
+                impl._exec(text(f"COMMENT ON SCHEMA {SCHEMA_NAME} IS '{val}'"))
+        impl._exec(text(f"DROP TABLE IF EXISTS {SCHEMA_NAME}.alembic_version"))
 
 
 def install_schema_comment_versioning() -> None:
