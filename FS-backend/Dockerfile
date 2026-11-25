@@ -15,6 +15,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY alembic.ini .
 COPY alembic/ alembic/
+COPY kg_alembic.ini .
+COPY kg_alembic/ kg_alembic/
 COPY app/ app/
 
 RUN useradd --create-home appuser

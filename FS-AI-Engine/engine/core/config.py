@@ -29,6 +29,12 @@ class Settings(BaseSettings):
         description="Async PostgreSQL connection string (must be provided via environment or .env)",
     )
 
+    # Knowledge graph database (written by FS-backend, read by graph retrieval); graph retrieval is off when unset
+    kg_database_url: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("KG_DATABASE_URL", "kg_database_url"),
+    )
+
     # Internal API key: only FS-backend (which verifies user logins) may call this engine
     engine_api_key: str = Field(
         validation_alias=AliasChoices("ENGINE_API_KEY", "engine_api_key"),

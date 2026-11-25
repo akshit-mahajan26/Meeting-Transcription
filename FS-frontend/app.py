@@ -7,7 +7,7 @@ All communication with the platform goes through the FastAPI backend via
 `services.api_client`; there is no direct database or LLM access here.
 
 Layout:
-    app_pages/  one module per page (overview, assistant, meetings, ingest)
+    app_pages/  one module per page (overview, assistant, meetings, graph, ingest)
     ui/         styles, shell, components, session state, shared scope panel
     utils/      pure formatting helpers
 """
@@ -23,7 +23,7 @@ import streamlit as st
 
 st.set_page_config(page_title="Meeting Intelligence", page_icon="🎙️", layout="wide", initial_sidebar_state="expanded")
 
-from app_pages import assistant, ingest, meetings, overview
+from app_pages import assistant, ingest, knowledge_graph, meetings, overview
 from ui.auth import is_logged_in, render_auth_page
 from ui.nav import register
 from ui.shell import render_shell
@@ -43,6 +43,7 @@ pages = {
     "overview": st.Page(overview.render, title="Overview", icon=":material/dashboard:", url_path="overview", default=True),
     "assistant": st.Page(assistant.render, title="Assistant", icon=":material/auto_awesome:", url_path="assistant"),
     "meetings": st.Page(meetings.render, title="Meetings", icon=":material/video_library:", url_path="meetings"),
+    "graph": st.Page(knowledge_graph.render, title="Graph", icon=":material/hub:", url_path="graph"),
     "ingest": st.Page(ingest.render, title="Ingest", icon=":material/cloud_upload:", url_path="ingest"),
 }
 register(pages)

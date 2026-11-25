@@ -2,6 +2,7 @@ from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from .api.routers.engine import router as engine_router
+from .api.routers.kg import router as kg_router
 from .api.routes import router as transcript_router
 from .core.config import get_settings
 from .core.security import verify_internal_key
@@ -28,9 +29,11 @@ app.add_middleware(
 # Versioned API routers (each mounted once):
 #   /api/v1/transcript/*  - ingestion pipeline steps (used by FS-backend)
 #   /api/v1/engine/query  - question answering (used by FS-backend)
+#   /api/v1/kg/extract    - knowledge graph extraction (used by FS-backend)
 # Both require the shared internal API key (sent by FS-backend after it has verified the user's login).
 app.include_router(transcript_router, prefix="/api/v1", dependencies=[Depends(verify_internal_key)])
 app.include_router(engine_router, prefix="/api/v1/engine", dependencies=[Depends(verify_internal_key)])
+app.include_router(kg_router, prefix="/api/v1", dependencies=[Depends(verify_internal_key)])
 
 
 @app.get("/health", tags=["system"])

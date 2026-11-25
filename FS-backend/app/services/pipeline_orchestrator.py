@@ -9,13 +9,9 @@ import httpx
 from sqlalchemy.orm import Session
 
 from ..core.config import Settings, get_settings
-from ..core.database import (
-    MeetingModel,
-    MeetingTopicModel,
-    SessionLocal,
-    SpeakerTurnModel,
-)
+from ..core.database import MeetingModel, MeetingTopicModel,SessionLocal, SpeakerTurnModel
 from .ingestion_failures import PipelineOrchestratorError
+from .kg_service import get_knowledge_graph_service, kg_enabled
 from .ownership import claim_project, get_owned_meeting
 
 logger = logging.getLogger(__name__)
@@ -23,7 +19,6 @@ logger = logging.getLogger(__name__)
 def _fmt_ts(sec: float) -> str:
     s = max(0, round(float(sec or 0.0)))
     return f"{s // 3600:02d}:{(s % 3600) // 60:02d}:{s % 60:02d}"
-
 
 class BackendPipelineOrchestrator:
     """
@@ -33,6 +28,7 @@ class BackendPipelineOrchestrator:
     2. Zero-import HTTP communication with FS-AI-Engine for token chunking, boundary detection, and embeddings.
     3. Atomic transaction persistence across the 4-tier database schema:
        projects -> meetings -> meeting_topics -> speaker_turns.
+    4. Knowledge graph extraction into the KG database (best effort, after the meeting is saved).
     """
 
     def __init__(self, settings: Settings | None = None):
@@ -173,7 +169,6 @@ class BackendPipelineOrchestrator:
                 "start_time": float(s.get("start_time") or 0.0),
                 "end_time": float(s.get("end_time") or 0.0),
             })
-
         ai_payload = {
             "meeting_id": meeting_id,
             "title": title,
@@ -182,7 +177,6 @@ class BackendPipelineOrchestrator:
             "summary": transcript_dict.get("summary"),
             "sentences": sanitized_sentences,
         }
-
         ai_response = await self._dispatch_to_ai_engine(ai_payload)
 
         # Extract normalized turns, topics, and executive summary from AI Engine response
@@ -212,7 +206,6 @@ class BackendPipelineOrchestrator:
         elif isinstance(ff_summary_raw, str):
             ff_summary_text = ff_summary_raw.strip()
 
-        # Prioritize Fireflies overview, fallback to AI Engine summary
         summary_text = ff_summary_text or ai_summary_text or ""
 
         # 3b. Fill in any missing embeddings BEFORE opening the write transaction (no HTTP call while rows are held)
@@ -272,7 +265,6 @@ class BackendPipelineOrchestrator:
                 db.add(meeting)
                 db.flush()
             else:
-                # A retry of a FAILED ingestion must not keep the failure reason as its summary
                 previous_summary = None if meeting.status == "FAILED" else meeting.summary
                 meeting.project_id = project_id or meeting.project_id
                 meeting.title = title or meeting.title
@@ -281,8 +273,7 @@ class BackendPipelineOrchestrator:
                 meeting.date = date_str or meeting.date
                 meeting.duration = duration or meeting.duration
                 meeting.status = "PROCESSED"
-                # Clean old topics and turns
-                db.query(MeetingTopicModel).filter(MeetingTopicModel.meeting_id == meeting_id).delete()
+                db.query(MeetingTopicModel).filter(MeetingTopicModel.meeting_id == meeting_id).delete()           # Clean old topics and turns
                 db.query(SpeakerTurnModel).filter(SpeakerTurnModel.meeting_id == meeting_id).delete()
                 db.flush()
 
@@ -375,7 +366,7 @@ class BackendPipelineOrchestrator:
                 f"Successfully persisted meeting '{meeting_id}' ({len(level2_segments)} topics, {len(turn_models)} turns) to database."
             )
 
-            return {
+            result = {
                 "status": "success",
                 "meeting_id": meeting_id,
                 "is_idempotent_hit": False,
@@ -390,6 +381,14 @@ class BackendPipelineOrchestrator:
             raise PipelineOrchestratorError(f"Database error saving meeting '{meeting_id}': {exc!s}") from exc
         finally:
             db.close()
+
+        # 5. Knowledge graph (best effort: the meeting is already saved and searchable without it)
+        if kg_enabled():
+            try:
+                result["knowledge_graph"] = await get_knowledge_graph_service().build_for_meeting(user_id, meeting_id)
+            except Exception as kg_err:
+                logger.warning(f"Knowledge graph build failed for meeting '{meeting_id}': {kg_err}", exc_info=True)
+        return result
 
 backend_pipeline_orchestrator = BackendPipelineOrchestrator()
 

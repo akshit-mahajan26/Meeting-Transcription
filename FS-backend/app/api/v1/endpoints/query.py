@@ -7,11 +7,13 @@ Contains ZERO AI orchestration, embedding generation, pgvector search, or LLM lo
 """
 
 import contextlib
+import json
 import logging
 from typing import Any, Literal
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
@@ -64,6 +66,44 @@ class QueryResponse(BaseModel):
     llm_model_used: str = "gemini-2.5-flash"
 
 
+def _engine_url(path: str) -> str:
+    ai_base = (settings.ai_engine_url or "").rstrip("/")
+    ai_base = ai_base.removesuffix("/api/v1")
+    return f"{ai_base}/api/v1/engine/{path}"
+
+
+def _engine_payload(request: QueryRequest, user: UserModel, db: Session) -> dict[str, Any]:
+    scoped_project_id = resolve_project_id(db, user.id, request.project_id) if request.project_id else None
+    return {
+        "query": request.query,
+        "project_id": scoped_project_id,
+        "meeting_id": request.meeting_id,
+        "speaker": request.speaker,
+        "history": [m.model_dump() for m in request.history],
+        "user_id": user.id,  # always the authenticated account, never client-supplied
+    }
+
+
+def _engine_headers() -> dict[str, str]:
+    return {"Content-Type": "application/json", "X-Internal-Api-Key": settings.engine_api_key}
+
+
+def _engine_http_error(resp: httpx.Response) -> HTTPException:
+    """The error to return to the client for a non-200 answer from the engine (the body must already be read)."""
+    if resp.status_code in (status.HTTP_401_UNAUTHORIZED, status.HTTP_403_FORBIDDEN):
+        # The user is logged in; the backend itself was refused. Not a 401, or the UI would log the user out.
+        logger.error("[API Gateway] AI Engine rejected the internal API key (check ENGINE_API_KEY in both .env files)")
+        return HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="The AI engine rejected this server's credentials. Check ENGINE_API_KEY configuration.",
+        )
+    logger.warning(f"[API Gateway] AI Engine returned HTTP {resp.status_code}")
+    error_detail = resp.text
+    with contextlib.suppress(Exception):
+        error_detail = resp.json().get("detail", resp.text)
+    return HTTPException(status_code=resp.status_code, detail=error_detail)
+
+
 @router.post(
     "/query",
     response_model=QueryResponse,
@@ -81,49 +121,19 @@ async def proxy_query_endpoint(
     Forwards payload to FS-AI-Engine without any local vector search or OpenRouter calls.
     Logs ONLY basic HTTP proxy transmission status.
     """
-    ai_base = (settings.ai_engine_url or "").rstrip("/")
-    ai_base = ai_base.removesuffix("/api/v1")
-    target_endpoint = f"{ai_base}/api/v1/engine/query"
+    target_endpoint = _engine_url("query")
     logger.info(f"[API Gateway] Proxying query request -> {target_endpoint}")
 
-    scoped_project_id = resolve_project_id(db, user.id, request.project_id) if request.project_id else None
-
-    payload = {
-        "query": request.query,
-        "project_id": scoped_project_id,
-        "meeting_id": request.meeting_id,
-        "speaker": request.speaker,
-        "history": [m.model_dump() for m in request.history],
-        "user_id": user.id,  # always the authenticated account, never client-supplied
-    }
+    payload = _engine_payload(request, user, db)
 
     try:
         async with httpx.AsyncClient(timeout=settings.ai_engine_timeout_seconds) as client:
-            resp = await client.post(
-                target_endpoint,
-                json=payload,
-                headers={"Content-Type": "application/json", "X-Internal-Api-Key": settings.engine_api_key},
-            )
+            resp = await client.post(target_endpoint, json=payload, headers=_engine_headers())
 
         if resp.status_code == 200:
             logger.info(f"[API Gateway] AI Engine response received (HTTP {resp.status_code})")
             return QueryResponse(**resp.json())
-        elif resp.status_code in (status.HTTP_401_UNAUTHORIZED, status.HTTP_403_FORBIDDEN):
-            # The user is logged in; the backend itself was refused. Not a 401, or the UI would log the user out.
-            logger.error("[API Gateway] AI Engine rejected the internal API key (check ENGINE_API_KEY in both .env files)")
-            raise HTTPException(
-                status_code=status.HTTP_502_BAD_GATEWAY,
-                detail="The AI engine rejected this server's credentials. Check ENGINE_API_KEY configuration.",
-            )
-        else:
-            logger.warning(f"[API Gateway] AI Engine returned HTTP {resp.status_code}")
-            error_detail = resp.text
-            with contextlib.suppress(Exception):
-                error_detail = resp.json().get("detail", resp.text)
-            raise HTTPException(
-                status_code=resp.status_code,
-                detail=error_detail
-            )
+        raise _engine_http_error(resp)
 
     except httpx.ConnectError as err:
         logger.error(f"[API Gateway] Connection Refused: Could not reach FS-AI-Engine at {target_endpoint}")
@@ -145,3 +155,79 @@ async def proxy_query_endpoint(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Gateway proxy error. See the backend logs for details."
         ) from exc
+
+
+def _sse_error(message: str) -> bytes:
+    return f"event: error\ndata: {json.dumps({'message': message})}\n\n".encode()
+
+
+@router.post(
+    "/query/stream",
+    status_code=status.HTTP_200_OK,
+    response_class=StreamingResponse,
+    summary="Streaming proxy to FS-AI-Engine",
+    description=(
+        "Same request and account scoping as /query. The engine's server-sent events (`status`, `token`, `final`, "
+        "`error`) are relayed as they arrive; `final` holds the complete /query response."
+    ),
+)
+async def proxy_query_stream_endpoint(
+    request: QueryRequest,
+    user: UserModel = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> StreamingResponse:
+    """Opens the engine's stream first (so engine errors still become proper HTTP errors), then relays its bytes."""
+    target_endpoint = _engine_url("query/stream")
+    logger.info(f"[API Gateway] Proxying streaming query request -> {target_endpoint}")
+
+    payload = _engine_payload(request, user, db)
+    client = httpx.AsyncClient(timeout=settings.ai_engine_timeout_seconds)  # the read timeout applies between chunks
+    try:
+        upstream = await client.send(
+            client.build_request("POST", target_endpoint, json=payload, headers=_engine_headers()), stream=True
+        )
+        if upstream.status_code != 200:
+            try:
+                await upstream.aread()
+            finally:
+                await upstream.aclose()
+            raise _engine_http_error(upstream)
+    except httpx.ConnectError as err:
+        await client.aclose()
+        logger.error(f"[API Gateway] Connection Refused: Could not reach FS-AI-Engine at {target_endpoint}")
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"FS-AI-Engine unavailable at {target_endpoint}. Verify AI_ENGINE_URL environment variable.",
+        ) from err
+    except httpx.TimeoutException as err:
+        await client.aclose()
+        logger.error("[API Gateway] Request timed out while waiting for FS-AI-Engine response")
+        raise HTTPException(
+            status_code=status.HTTP_504_GATEWAY_TIMEOUT, detail="AI Engine query processing timed out."
+        ) from err
+    except HTTPException:
+        await client.aclose()
+        raise
+    except Exception as exc:
+        await client.aclose()
+        logger.error(f"[API Gateway] Unexpected proxy error: {exc}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Gateway proxy error. See the backend logs for details."
+        ) from exc
+
+    async def relay():
+        try:
+            async for chunk in upstream.aiter_raw():
+                yield chunk
+        except httpx.HTTPError as exc:  # the engine went away or stalled after the stream had started
+            logger.error(f"[API Gateway] Stream from FS-AI-Engine broke: {exc!r}")
+            yield _sse_error("The AI engine stopped responding.")
+        finally:
+            await upstream.aclose()
+            await client.aclose()
+
+    return StreamingResponse(
+        relay(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},  # no proxy buffering, so tokens arrive live
+    )

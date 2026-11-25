@@ -31,6 +31,12 @@ class Settings(BaseSettings):
         description="PostgreSQL database connection string (must be provided via environment or .env)",
     )
 
+    # Knowledge graph database (a separate database; the graph is disabled when unset)
+    kg_database_url: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("KG_DATABASE_URL", "kg_database_url"),
+    )
+
     # Fireflies API Credentials
     fireflies_api_key: str | None = Field(
         default=None,
@@ -82,7 +88,7 @@ class Settings(BaseSettings):
     def AI_ENGINE_URL(self) -> str:
         return self.ai_engine_url
 
-    @field_validator("database_url", mode="before")
+    @field_validator("database_url", "kg_database_url", mode="before")
     @classmethod
     def assemble_database_url(cls, v: str) -> str:
         # Name the psycopg 3 driver explicitly: a bare postgresql:// URL selects whichever driver the installed SQLAlchemy defaults to.

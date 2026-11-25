@@ -2,7 +2,7 @@
 LangGraph Nodes for the Dedicated AI Engine Chatbot Pipeline.
 
 Implements the modular node functions executed within the ChatState StateGraph:
-1. extract_filters_node: Dynamically resolves participant names, meeting boundaries, and query intent (catalog vs participant involvement vs content Q&A) from DB records.
+1. Query understanding steps (load_context, rewrite_query, analyze_query, resolve_scope, lookup_records): resolve participant names, meeting boundaries, and query intent (catalog vs participant involvement vs content Q&A) from DB records. extract_filters_node runs them in sequence.
 2. embed_query_node: Generates 1536-dimensional query vector embeddings.
 3. vector_retrieval_node: Executes PostgreSQL pgvector cosine similarity search with metadata filtering.
 4. llm_synthesis_node: Synthesizes conversational response using OpenRouter LLM.
@@ -18,7 +18,7 @@ from typing import Any
 from sqlalchemy import text
 
 from ..core.database import AsyncSessionLocal
-from .chat_analysis import analyze_query
+from .chat_analysis import QueryAnalysis, analyze_query
 from .chat_citations import align_citations_with_answer, format_citations_node
 from .chat_query import (
     MEETING_STOP_WORDS,
@@ -49,6 +49,7 @@ __all__ = [
     "ChatState",
     "QueryIntent",
     "align_citations_with_answer",
+    "analyze_query_node",
     "build_catalog_records",
     "embed_query_node",
     "enrich_chunk_text",
@@ -57,163 +58,235 @@ __all__ = [
     "format_citations_node",
     "is_name_token_match",
     "llm_synthesis_node",
+    "load_context_node",
+    "lookup_records_node",
+    "resolve_scope_node",
+    "rewrite_query_node",
     "vector_retrieval_node",
 ]
 
 
 # ============================================================================
-# Node 1: Extract Filters Node
+# Query understanding steps (run as the "understand" subgraph; see chat_subgraphs.py)
 # ============================================================================
 
-async def extract_filters_node(state: ChatState) -> dict[str, Any]:
+async def load_context_node(state: ChatState) -> dict[str, Any]:
     """
-    Node 1: Extract Filters.
-    Parses user query to identify mentioned participants from database metadata, checks if a specific meeting title or participant-based meeting scope is requested, and classifies query intent (catalog vs participant involvement vs content Q&A).
+    Step 1: Load the account's meetings, projects and speakers from PostgreSQL.
+    Independent of the query text, so it runs alongside the rewrite step.
     """
     user_id = state["user_id"]  # required: every query is scoped to one account
     project_id = state.get("project_id")
-    resolved_speaker = state.get("extracted_speaker")
-    resolved_speakers: list[str] = _state_speakers(state)
-
-    resolved_meeting_id = state.get("meeting_id")
-    user_picked_meeting = bool(resolved_meeting_id)
-    date_meeting_ids: list[str] | None = None  # several meetings share the requested date
-    no_meeting_on_date: str | None = None  # the requested date, when no meeting was held on it
-    relevant_meetings: list[dict[str, Any]] = []
     available_meetings: list[dict[str, Any]] = []
     available_projects: list[dict[str, Any]] = []
     available_speakers: list[str] = []
-    reasoning = "Universal semantic vector search across meeting transcripts"
-    time_scope: str | None = state.get("time_scope")
-    cross_meeting = False
-    raw_query = state.get("query", "").strip()
 
-    if AsyncSessionLocal is not None:
-        async with AsyncSessionLocal() as session:
-            # 1. Fetch available meetings, projects, and speakers from PostgreSQL first
-            if project_id:
-                m_res = await session.execute(
-                    text("SELECT id, title, project_id, date FROM meetings WHERE user_id = :u_id AND project_id = :p_id AND status <> 'FAILED'"),
-                    {"u_id": user_id, "p_id": project_id},
-                )
-            else:
-                m_res = await session.execute(
-                    text("SELECT id, title, project_id, date FROM meetings WHERE user_id = :u_id AND status <> 'FAILED'"), {"u_id": user_id}
-                )
-            meetings_db = m_res.fetchall()
-            meetings_dict = {m[0]: (m[1] or m[0]).strip() for m in meetings_db}
-            available_meetings = [
-                {"id": m[0], "title": (m[1] or m[0]).strip(), "project_id": _unscope_proj(m[2]), "date": format_meeting_date(m[3])}
-                for m in meetings_db
-            ]
+    if AsyncSessionLocal is None:
+        # Without a database, whatever lists the caller put in the state are used as given
+        return {
+            "available_meetings": state.get("available_meetings") or [],
+            "available_projects": state.get("available_projects") or [],
+            "available_speakers": state.get("available_speakers") or [],
+        }
 
+    async with AsyncSessionLocal() as session:
+        if project_id:
+            m_res = await session.execute(
+                text("SELECT id, title, project_id, date FROM meetings WHERE user_id = :u_id AND project_id = :p_id AND status <> 'FAILED'"),
+                {"u_id": user_id, "p_id": project_id},
+            )
+        else:
+            m_res = await session.execute(
+                text("SELECT id, title, project_id, date FROM meetings WHERE user_id = :u_id AND status <> 'FAILED'"), {"u_id": user_id}
+            )
+        meetings_db = m_res.fetchall()
+        available_meetings = [
+            {"id": m[0], "title": (m[1] or m[0]).strip(), "project_id": _unscope_proj(m[2]), "date": format_meeting_date(m[3])}
+            for m in meetings_db
+        ]
+
+        try:
+            async with session.begin_nested():
+                p_res = await session.execute(
+                    text("SELECT id, name, status FROM projects WHERE user_id = :u_id"), {"u_id": user_id}
+                )
+                available_projects = [
+                    {"id": r[0], "name": (r[1] or _unscope_proj(r[0]) or r[0]).strip(), "status": (r[2] or "ACTIVE")}
+                    for r in p_res.fetchall()
+                ]
+        except Exception as e:
+            logger.warning(f"[LANGGRAPH: LOAD_CONTEXT] Could not query projects table: {e}")
+
+        if not available_projects:
             try:
                 async with session.begin_nested():
-                    p_res = await session.execute(
-                        text("SELECT id, name, status FROM projects WHERE user_id = :u_id"), {"u_id": user_id}
+                    m_p_res = await session.execute(
+                        text("SELECT DISTINCT project_id FROM meetings WHERE user_id = :u_id AND project_id IS NOT NULL AND status <> 'FAILED'"),
+                        {"u_id": user_id},
                     )
                     available_projects = [
-                        {"id": r[0], "name": (r[1] or _unscope_proj(r[0]) or r[0]).strip(), "status": (r[2] or "ACTIVE")}
-                        for r in p_res.fetchall()
+                        {"id": r[0], "name": f"Project {_unscope_proj(r[0]) or r[0]}", "status": "ACTIVE"}
+                        for r in m_p_res.fetchall()
                     ]
-            except Exception as e:
-                logger.warning(f"[LANGGRAPH: EXTRACT_FILTERS] Could not query projects table: {e}")
+            except Exception:
+                pass
 
-            if not available_projects:
-                try:
-                    async with session.begin_nested():
-                        m_p_res = await session.execute(
-                            text("SELECT DISTINCT project_id FROM meetings WHERE user_id = :u_id AND project_id IS NOT NULL AND status <> 'FAILED'"),
-                            {"u_id": user_id},
-                        )
-                        available_projects = [
-                            {"id": r[0], "name": f"Project {_unscope_proj(r[0]) or r[0]}", "status": "ACTIVE"}
-                            for r in m_p_res.fetchall()
-                        ]
-                except Exception:
-                    pass
+        # Dynamic Speaker List from database records
+        spk_res = await session.execute(
+            text("SELECT DISTINCT COALESCE(metadata->>'speaker', speaker_name) FROM speaker_turns WHERE user_id = :u_id AND (speaker_name IS NOT NULL OR metadata->>'speaker' IS NOT NULL)"),
+            {"u_id": user_id},
+        )
+        available_speakers = [r[0] for r in spk_res.fetchall() if r[0]]
 
-            # Dynamic Speaker List from database records
-            spk_res = await session.execute(
-                text("SELECT DISTINCT COALESCE(metadata->>'speaker', speaker_name) FROM speaker_turns WHERE user_id = :u_id AND (speaker_name IS NOT NULL OR metadata->>'speaker' IS NOT NULL)"),
-                {"u_id": user_id},
-            )
-            available_speakers = [r[0] for r in spk_res.fetchall() if r[0]]
+    return {
+        "available_meetings": available_meetings,
+        "available_projects": available_projects,
+        "available_speakers": available_speakers,
+    }
 
-            # 2. Rewrite to a standalone question, then analyse it (intent, entities, dates, retrieval need)
-            query = await rewrite_query(raw_query, state.get("history") or [])
-            analysis = await analyze_query(
-                query,
-                available_speakers=available_speakers,
-                available_meetings=available_meetings,
-                available_projects=available_projects,
-            )
-            date_from, date_to = analysis.date_from, analysis.date_to
-            structured_speaker = analysis.speaker
-            structured_meeting_id = analysis.meeting_id
-            cross_meeting = analysis.cross_meeting
-            if analysis.time_scope:
-                time_scope = analysis.time_scope
 
-            if not project_id and analysis.project_id:
-                project_id = analysis.project_id
+async def rewrite_query_node(state: ChatState) -> dict[str, Any]:
+    """Step 2: Rewrite the message into a standalone, typo-corrected question (needs only the query and history)."""
+    query = await rewrite_query(state.get("query", "").strip(), state.get("history") or [])
+    return {"query": query}  # corrected, standalone question used by every later step
 
-            # 3. Speaker from the analysis step
-            if not resolved_speakers and structured_speaker:
-                resolved_speakers = [structured_speaker]
-                resolved_speaker = structured_speaker
 
-            # 4. Dynamic Meeting Resolution
-            if resolved_meeting_id:
-                m_title = meetings_dict.get(resolved_meeting_id, resolved_meeting_id)
-                reasoning = f"Scoped to meeting '{m_title}' ({resolved_meeting_id})"
-            elif structured_meeting_id and structured_meeting_id in meetings_dict:
-                resolved_meeting_id = structured_meeting_id
-                m_title = meetings_dict[resolved_meeting_id]
-                reasoning = f"Scoped to meeting '{m_title}' ({resolved_meeting_id})"
+async def analyze_query_node(state: ChatState) -> dict[str, Any]:
+    """Step 3: Analyse the standalone question (intent, entities, dates, retrieval need) against the loaded lists."""
+    analysis = await analyze_query(
+        state["query"],
+        available_speakers=state.get("available_speakers") or [],
+        available_meetings=state.get("available_meetings") or [],
+        available_projects=state.get("available_projects") or [],
+    )
+    return {"analysis": analysis}
+
+
+async def resolve_scope_node(state: ChatState) -> dict[str, Any]:
+    """
+    Step 4: Turn the analysis into the speaker, project and meeting scope of the question
+    (explicit meeting, meeting(s) on a date, latest/earliest meeting).
+    """
+    user_id = state["user_id"]
+    analysis: QueryAnalysis = state["analysis"]
+    project_id = state.get("project_id")
+    resolved_speaker = state.get("extracted_speaker")
+    resolved_speakers: list[str] = _state_speakers(state)
+    resolved_meeting_id = state.get("meeting_id")
+    user_picked_meeting = bool(resolved_meeting_id)
+    available_meetings = state.get("available_meetings") or []
+    date_meeting_ids: list[str] | None = None  # several meetings share the requested date
+    no_meeting_on_date: str | None = None  # the requested date, when no meeting was held on it
+    reasoning = "Universal semantic vector search across meeting transcripts"
+    time_scope: str | None = state.get("time_scope")
+    if analysis.time_scope:
+        time_scope = analysis.time_scope
+
+    if AsyncSessionLocal is not None:
+        meetings_dict = {m["id"]: m["title"] for m in available_meetings}
+        date_from, date_to = analysis.date_from, analysis.date_to
+        cross_meeting = analysis.cross_meeting
+
+        if not project_id and analysis.project_id:
+            project_id = analysis.project_id
+
+        # Speaker from the analysis step
+        if not resolved_speakers and analysis.speaker:
+            resolved_speakers = [analysis.speaker]
+            resolved_speaker = analysis.speaker
+
+        # Dynamic Meeting Resolution
+        if resolved_meeting_id:
+            m_title = meetings_dict.get(resolved_meeting_id, resolved_meeting_id)
+            reasoning = f"Scoped to meeting '{m_title}' ({resolved_meeting_id})"
+        elif analysis.meeting_id and analysis.meeting_id in meetings_dict:
+            resolved_meeting_id = analysis.meeting_id
+            m_title = meetings_dict[resolved_meeting_id]
+            reasoning = f"Scoped to meeting '{m_title}' ({resolved_meeting_id})"
+        else:
+            on_date, date_label = meetings_in_date_range(available_meetings, date_from, date_to)
+            if len(on_date) == 1:
+                resolved_meeting_id = on_date[0]["id"]
+                reasoning = (
+                    f"Scoped to the meeting held on {date_label}: '{on_date[0]['title']}' ({resolved_meeting_id})"
+                )
+            elif on_date:
+                date_meeting_ids = [m["id"] for m in on_date]
+                reasoning = f"{len(on_date)} meetings were held on {date_label}; searching all of them"
+            elif date_label:
+                no_meeting_on_date = date_label
+                reasoning = f"No meeting was held on {date_label}"
             else:
-                on_date, date_label = meetings_in_date_range(available_meetings, date_from, date_to)
-                if len(on_date) == 1:
-                    resolved_meeting_id = on_date[0]["id"]
-                    reasoning = (
-                        f"Scoped to the meeting held on {date_label}: '{on_date[0]['title']}' ({resolved_meeting_id})"
-                    )
-                elif on_date:
-                    date_meeting_ids = [m["id"] for m in on_date]
-                    reasoning = f"{len(on_date)} meetings were held on {date_label}; searching all of them"
-                elif date_label:
-                    no_meeting_on_date = date_label
-                    reasoning = f"No meeting was held on {date_label}"
-                else:
-                    rel_pool = available_meetings
-                    if resolved_speakers:
-                        clauses = [_speaker_clause(f"rs_{i}") for i in range(len(resolved_speakers))]
-                        rs_params = {"u_id": user_id} | {f"rs_{i}": f"%{s.lower()}%" for i, s in enumerate(resolved_speakers)}
+                rel_pool = available_meetings
+                if resolved_speakers:
+                    clauses = [_speaker_clause(f"rs_{i}") for i in range(len(resolved_speakers))]
+                    rs_params = {"u_id": user_id} | {f"rs_{i}": f"%{s.lower()}%" for i, s in enumerate(resolved_speakers)}
+                    async with AsyncSessionLocal() as session:
                         rs_res = await session.execute(
                             text(f"SELECT DISTINCT t.meeting_id FROM speaker_turns t WHERE t.user_id = :u_id AND ({' OR '.join(clauses)})"),
                             rs_params,
                         )
                         spoke_in = {r[0] for r in rs_res.fetchall()}
-                        if spoke_in:
-                            rel_pool = [m for m in available_meetings if m["id"] in spoke_in]
-                    m_id = None
-                    meeting_reasoning = (
-                        "Cross-meeting query: searching across all meetings" if cross_meeting
-                        else "Universal semantic vector search across meeting transcripts"
-                    )
-                    if not m_id and not cross_meeting and time_scope == "latest" and rel_pool:
-                        newest = max(rel_pool, key=lambda m: str(m.get("date") or ""))
-                        m_id, meeting_reasoning = newest["id"], f"Most recent meeting: '{newest['title']}' ({newest['id']})"
-                    elif not m_id and not cross_meeting and time_scope == "earliest" and rel_pool:
-                        earliest = min(rel_pool, key=lambda m: str(m.get("date") or ""))
-                        m_id, meeting_reasoning = earliest["id"], f"Earliest meeting: '{earliest['title']}' ({earliest['id']})"
-                    if m_id:
-                        resolved_meeting_id = m_id
-                        reasoning = meeting_reasoning
+                    if spoke_in:
+                        rel_pool = [m for m in available_meetings if m["id"] in spoke_in]
+                m_id = None
+                meeting_reasoning = (
+                    "Cross-meeting query: searching across all meetings" if cross_meeting
+                    else "Universal semantic vector search across meeting transcripts"
+                )
+                if not m_id and not cross_meeting and time_scope == "latest" and rel_pool:
+                    newest = max(rel_pool, key=lambda m: str(m.get("date") or ""))
+                    m_id, meeting_reasoning = newest["id"], f"Most recent meeting: '{newest['title']}' ({newest['id']})"
+                elif not m_id and not cross_meeting and time_scope == "earliest" and rel_pool:
+                    earliest = min(rel_pool, key=lambda m: str(m.get("date") or ""))
+                    m_id, meeting_reasoning = earliest["id"], f"Earliest meeting: '{earliest['title']}' ({earliest['id']})"
+                if m_id:
+                    resolved_meeting_id = m_id
+                    reasoning = meeting_reasoning
 
-            # 5. Query intent comes from the analysis step
-            query_intent = analysis.intent
+    else:
+        # Fallback when running without a database session: only the speaker and an explicitly named meeting apply
+        if analysis.speaker and not resolved_speakers:
+            resolved_speakers = [analysis.speaker]
+            resolved_speaker = analysis.speaker
+        if analysis.meeting_id and not resolved_meeting_id and analysis.meeting_id in {m.get("id") for m in available_meetings}:
+            resolved_meeting_id = analysis.meeting_id
+            reasoning = f"Scoped to meeting '{resolved_meeting_id}'"
 
+    return {
+        "time_scope": time_scope,
+        "extracted_speaker": resolved_speaker,
+        "extracted_speakers": resolved_speakers,
+        "meeting_id": resolved_meeting_id,
+        "meeting_scope_inferred": not user_picked_meeting and bool(resolved_meeting_id or date_meeting_ids),
+        "date_meeting_ids": date_meeting_ids,
+        "no_meeting_on_date": no_meeting_on_date,
+        "project_id": project_id,
+        "reasoning": reasoning,
+    }
+
+
+async def lookup_records_node(state: ChatState) -> dict[str, Any]:
+    """
+    Step 5: Query intent and the relational records that answer it
+    (project participant roster, meetings a participant took part in), and whether transcript retrieval is needed.
+    """
+    user_id = state["user_id"]
+    analysis: QueryAnalysis = state["analysis"]
+    project_id = state.get("project_id")
+    resolved_speakers = _state_speakers(state)
+    resolved_meeting_id = state.get("meeting_id")
+    time_scope = state.get("time_scope")
+    reasoning = state.get("reasoning") or ""
+    available_meetings = state.get("available_meetings") or []
+    available_projects = state.get("available_projects") or []
+    available_speakers = state.get("available_speakers") or []
+    relevant_meetings: list[dict[str, Any]] = []
+    query_intent = analysis.intent
+    update: dict[str, Any] = {}
+
+    if AsyncSessionLocal is not None:
+        async with AsyncSessionLocal() as session:
             # A participant roster for a project is scoped to that project's speakers
             if (
                 query_intent == QueryIntent.CATALOG
@@ -228,7 +301,7 @@ async def extract_filters_node(state: ChatState) -> dict[str, Any]:
                 available_speakers = [r[0] for r in p_spk_res.fetchall() if r[0]]
                 reasoning = f"Catalog query: Found {len(available_speakers)} participant(s) in project {project_id}"
 
-            # 6. Intent-driven routing logic
+            # Intent-driven routing logic
             if query_intent == QueryIntent.PARTICIPANT_INVOLVEMENT and resolved_speakers:
                 spk_clauses = []
                 params = {"u_id": user_id}
@@ -283,24 +356,7 @@ async def extract_filters_node(state: ChatState) -> dict[str, Any]:
                 elif resolved_speakers and resolved_meeting_id:
                     reasoning += f" | Filtered to participant(s): {', '.join(resolved_speakers)}"
 
-    else:
-        # Fallback when running without a database session
-        query = await rewrite_query(raw_query, state.get("history") or [])
-        analysis = await analyze_query(
-            query,
-            available_speakers=state.get("available_speakers") or [],
-            available_meetings=state.get("available_meetings") or [],
-            available_projects=state.get("available_projects") or [],
-        )
-        if analysis.time_scope:
-            time_scope = analysis.time_scope
-        if analysis.speaker and not resolved_speakers:
-            resolved_speakers = [analysis.speaker]
-            resolved_speaker = analysis.speaker
-        if analysis.meeting_id and not resolved_meeting_id and analysis.meeting_id in {m.get("id") for m in state.get("available_meetings") or []}:
-            resolved_meeting_id = analysis.meeting_id
-            reasoning = f"Scoped to meeting '{resolved_meeting_id}'"
-        query_intent = analysis.intent
+        update = {"meeting_id": resolved_meeting_id, "available_speakers": available_speakers}
 
     logger.info(
         f"[LANGGRAPH: EXTRACT_FILTERS] Intent: {query_intent} | Speakers: {resolved_speakers} | "
@@ -315,25 +371,27 @@ async def extract_filters_node(state: ChatState) -> dict[str, Any]:
         or (query_intent == QueryIntent.PARTICIPANT_INVOLVEMENT and bool(relevant_meetings))
     )
 
-    return {
+    return update | {
         "query_intent": query_intent,
         "response_depth": analysis.response_depth,
-        "time_scope": time_scope,
         "skip_retrieval": skip_retrieval,
-        "extracted_speaker": resolved_speaker,
-        "extracted_speakers": resolved_speakers,
-        "query": query,  # corrected, standalone question used by every later step
         # Preserve conversation history so synthesis LLM has context for references and follow-ups
         "history": state.get("history") or [],
-        "meeting_id": resolved_meeting_id,
-        "meeting_scope_inferred": not user_picked_meeting and bool(resolved_meeting_id or date_meeting_ids),
-        "date_meeting_ids": date_meeting_ids,
-        "no_meeting_on_date": no_meeting_on_date,
-        "project_id": project_id,
-        "available_meetings": available_meetings,
-        "available_projects": available_projects,
-        "available_speakers": available_speakers,
         "relevant_meetings": relevant_meetings,
         "reasoning": reasoning,
         "catalog_entities": analysis.catalog_entities,
     } | ({"answer": analysis.reply or ""} if query_intent == QueryIntent.SMALLTALK else {})
+
+
+UNDERSTAND_STEPS = (load_context_node, rewrite_query_node, analyze_query_node, resolve_scope_node, lookup_records_node)
+
+
+async def extract_filters_node(state: ChatState) -> dict[str, Any]:
+    """
+    Runs the query understanding steps in sequence and returns the combined state update.
+    The compiled graph runs the same steps as a subgraph, with the independent first two in parallel.
+    """
+    update: dict[str, Any] = {}
+    for step in UNDERSTAND_STEPS:
+        update |= await step(state | update)
+    return update

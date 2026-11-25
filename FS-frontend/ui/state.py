@@ -28,6 +28,24 @@ def _meeting_for(user_id: str, meeting_id: str) -> dict[str, Any] | None:
     return api_client.get_meeting(meeting_id)
 
 
+@st.cache_data(ttl=20, show_spinner=False)
+def _graph_for(user_id: str, project_id: str | None, meeting_id: str | None, types: tuple[str, ...], limit: int) -> dict[str, Any]:
+    return api_client.get_graph(project_id, meeting_id, list(types), limit)
+
+
+@st.cache_data(ttl=20, show_spinner=False)
+def _graph_entity_for(user_id: str, entity_id: str) -> dict[str, Any]:
+    return api_client.get_graph_entity(entity_id)
+
+
+def load_graph(project_id: str | None, meeting_id: str | None, types: list[str], limit: int) -> dict[str, Any]:
+    return _graph_for(current_user_id(), project_id, meeting_id, tuple(sorted(types)), limit)
+
+
+def load_graph_entity(entity_id: str) -> dict[str, Any]:
+    return _graph_entity_for(current_user_id(), entity_id)
+
+
 def load_meetings() -> list[dict[str, Any]]:
     return _meetings_for(current_user_id())
 

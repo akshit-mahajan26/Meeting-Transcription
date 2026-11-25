@@ -1,3 +1,4 @@
+import logging
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -6,6 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from .api.v1.router import api_router
 from .core.config import get_settings
 from .core.database import init_db
+from .core.kg_database import init_kg_db
 
 settings = get_settings()
 
@@ -14,6 +16,11 @@ settings = get_settings()
 async def lifespan(app: FastAPI):
     """Lifespan event handler to initialize database schema on startup."""
     init_db()
+    try:
+        init_kg_db()
+    except Exception:
+        # The graph is an add-on: meetings and chat keep working while its database is unavailable
+        logging.getLogger(__name__).exception("Knowledge graph migration failed; the graph is unavailable.")
     yield
 
 

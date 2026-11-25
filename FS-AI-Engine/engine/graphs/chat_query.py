@@ -32,6 +32,7 @@ class ChatState(TypedDict, total=False):
     query: str
     user_id: str
     query_intent: str
+    analysis: Any  # QueryAnalysis from the analyze step, read by the scope and records steps
     response_depth: str | None  # "concise" (direct factual lookup/short answer) or "explanatory" (deep dive, rationale, context, follow-up explanation)
     time_scope: str | None  # e.g. "latest" for "most recent meeting" / "last call"
     skip_retrieval: bool
@@ -47,6 +48,8 @@ class ChatState(TypedDict, total=False):
     extracted_speakers: list[str] | None
     query_embedding: list[float]
     retrieved_chunks: list[dict[str, Any]]
+    graph_facts: list[str] | None  # knowledge graph relations around the entities the question is about
+    graph_turn_ids: list[str] | None  # turns grounding those relations, added to the excerpts if vector search missed them
     relevant_meetings: list[dict[str, Any]] | None
     available_meetings: list[dict[str, Any]] | None
     available_projects: list[dict[str, Any]] | None
