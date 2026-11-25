@@ -8,6 +8,7 @@ from ui.components import page_header
 from ui.nav import go
 from ui.scope import set_scope
 from ui.state import known_projects, load_meetings
+from utils.formatting import esc
 
 
 def render() -> None:
@@ -55,7 +56,7 @@ def render() -> None:
             st.markdown("**Recent meetings**")
             for m in meetings[:6]:
                 a, b, c = st.columns([5, 2, 2], vertical_alignment="center")
-                a.markdown(f"**{(m.get('title') or m['id'])}**  \n<span style='color:var(--faint);font-size:.75rem'>{m.get('project_id') or 'Unassigned'} · {m.get('total_turns', 0)} turns</span>", unsafe_allow_html=True)
+                a.markdown(f"**{esc(m.get('title') or m['id'])}**  \n<span style='color:var(--faint);font-size:.75rem'>{esc(m.get('project_id') or 'Unassigned')} · {m.get('total_turns', 0)} turns</span>", unsafe_allow_html=True)
                 if b.button("Open", key=f"open_{m['id']}", icon=":material/open_in_new:", width="stretch"):
                     st.session_state.open_meeting_id = m["id"]
                     go("meetings")

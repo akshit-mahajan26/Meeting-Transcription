@@ -1,6 +1,7 @@
 import logging
 import os
 import re
+from collections.abc import AsyncIterator
 
 from openai import AsyncOpenAI
 
@@ -107,13 +108,7 @@ class LLMClient:
         Sends asynchronous chat completion to Google Gemini.
         Provides robust conversational fallback responses if offline or API key is not configured.
         """
-        target_model = model or self.default_model
-
-        # Strip provider prefixes the Gemini endpoint does not accept
-        if target_model.startswith("google/"):
-            target_model = target_model[len("google/"):]
-        elif target_model.startswith("gemini/"):
-            target_model = target_model[len("gemini/"):]
+        target_model = self._normalize_model(model)
 
         # Ensure sufficient token budget for reasoning models like Gemini 2.5 Flash whose internal thinking tokens consume max_tokens
         effective_max_tokens = max(max_tokens or 8192, 8192)
@@ -169,6 +164,84 @@ class LLMClient:
 
         # Deterministic Conversational Fallback
         return self._generate_heuristic_fallback(messages)
+
+    def _normalize_model(self, model: str | None) -> str:
+        """The model name the Gemini endpoint accepts (provider prefixes stripped)."""
+        target_model = model or self.default_model
+        if target_model.startswith("google/"):
+            target_model = target_model[len("google/"):]
+        elif target_model.startswith("gemini/"):
+            target_model = target_model[len("gemini/"):]
+        return target_model
+
+    async def stream_chat_completion(
+        self,
+        messages: list[dict[str, str]],
+        model: str | None = None,
+        max_tokens: int = 800,
+        temperature: float = 0.2,
+    ) -> AsyncIterator[str]:
+        """
+        Streams the completion as text deltas. Provider order matches generate_chat_completion: the OpenAI-compatible
+        endpoint, then the Google GenAI SDK, then the offline fallback (one chunk). A provider that fails before it
+        produced any text is skipped; one that fails after producing text raises, because switching provider mid-answer
+        would splice two different answers together (the caller decides how to recover).
+        """
+        target_model = self._normalize_model(model)
+        effective_max_tokens = max(max_tokens or 8192, 8192)
+        started = False
+
+        if self._client is not None:
+            try:
+                logger.info(f"[LLMClient] Streaming request to {target_model} via {self.base_url} (max_tokens={effective_max_tokens})")
+                stream = await self._client.chat.completions.create(
+                    model=target_model,
+                    messages=messages,
+                    max_tokens=effective_max_tokens,
+                    temperature=temperature,
+                    stream=True,
+                )
+                async for chunk in stream:
+                    delta = chunk.choices[0].delta.content if chunk.choices else None
+                    if delta:
+                        started = True
+                        yield delta
+                if started:
+                    return
+            except Exception as e:
+                if started:
+                    raise
+                logger.warning(f"[LLMClient] Gemini streaming call failed: {e}. Trying secondary path.")
+
+        if self._genai_client is not None:
+            try:
+                logger.info(f"[LLMClient] Streaming request to {target_model} via Google GenAI SDK")
+                config = {"temperature": temperature} if temperature is not None else {}
+                sys_parts = [m["content"] for m in messages if m.get("role") == "system"]
+                if sys_parts:
+                    config["system_instruction"] = "\n".join(sys_parts)
+                if max_tokens:
+                    config["max_output_tokens"] = max_tokens
+                contents = [
+                    {"role": "model" if m.get("role") == "assistant" else "user", "parts": [{"text": m["content"]}]}
+                    for m in messages
+                    if m.get("role") != "system"
+                ]
+                stream = await self._genai_client.aio.models.generate_content_stream(
+                    model=target_model, contents=contents, config=config or None
+                )
+                async for chunk in stream:
+                    if chunk.text:
+                        started = True
+                        yield chunk.text
+                if started:
+                    return
+            except Exception as e:
+                if started:
+                    raise
+                logger.warning(f"[LLMClient] Google GenAI streaming call failed: {e}. Executing conversational synthesis fallback.")
+
+        yield self._generate_heuristic_fallback(messages)
 
     def _generate_heuristic_fallback(self, messages: list[dict[str, str]]) -> str:
         """

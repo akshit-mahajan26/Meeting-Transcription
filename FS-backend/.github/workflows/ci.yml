@@ -1,0 +1,47 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: ci
+          POSTGRES_PASSWORD: ci
+          POSTGRES_DB: ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U ci"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgresql+psycopg://ci:ci@localhost:5432/ci
+      TEST_DATABASE_URL: postgresql+psycopg://ci:ci@localhost:5432/ci
+      JWT_SECRET: ci-jwt-secret-not-for-production
+      ENGINE_API_KEY: ci-engine-key-not-for-production
+      AI_ENGINE_URL: http://localhost:8001
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.11"
+      - run: uv sync --frozen
+      - name: Migrate the test database and create the account test_seeded_test_account_can_log_in expects
+        run: |
+          uv run python -c "
+          from app.core.database import SessionLocal, UserModel, init_db
+          from app.core.security import hash_password
+          init_db()
+          with SessionLocal() as db:
+              db.add(UserModel(email='test@test.com', password_hash=hash_password('123456')))
+              db.commit()
+          "
+      - name: Tests
+        run: uv run pytest -q
