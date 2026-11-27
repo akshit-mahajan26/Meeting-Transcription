@@ -73,7 +73,7 @@ class UserModel(Base):
     id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
     email = Column(String(255), unique=True, nullable=False, index=True)
     password_hash = Column(String(255), nullable=False)
-    created_at = Column(DateTime, default=utc_now, nullable=False)
+    created_at = Column(DateTime(timezone=True), default=utc_now, nullable=False)
 
 
 class ProjectModel(Base):
@@ -84,7 +84,7 @@ class ProjectModel(Base):
     user_id = _owner_column()
     name = Column(String(255), nullable=False)
     status = Column(String(50), default="ACTIVE", nullable=False)
-    created_at = Column(DateTime, default=utc_now, nullable=False)
+    created_at = Column(DateTime(timezone=True), default=utc_now, nullable=False)
 
     meetings = relationship("MeetingModel", back_populates="project", cascade="all, delete-orphan")
 
@@ -102,8 +102,8 @@ class MeetingModel(Base):
     date = Column(String(100), nullable=True)
     duration = Column(Float, nullable=True)
     status = Column(String(50), default="PROCESSED", nullable=False)
-    created_at = Column(DateTime, default=utc_now, nullable=False)
-    updated_at = Column(DateTime, default=utc_now, onupdate=utc_now, nullable=False)
+    created_at = Column(DateTime(timezone=True), default=utc_now, nullable=False)
+    updated_at = Column(DateTime(timezone=True), default=utc_now, onupdate=utc_now, nullable=False)
 
     project = relationship("ProjectModel", back_populates="meetings")
 

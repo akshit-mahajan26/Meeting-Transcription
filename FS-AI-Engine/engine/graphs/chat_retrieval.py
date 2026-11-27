@@ -19,6 +19,7 @@ from ..core.config import get_settings
 from ..core.database import AsyncSessionLocal
 from ..services.embedding_service import EmbeddingService
 from .chat_query import MEETING_STOP_WORDS, ChatState, _speaker_clause, _state_speakers
+from .chat_retrieval_sql import VEC_SIM_TOKEN, fetch_candidates, legacy_sql, pgvector_supports_iterative
 
 # Dedicated AI Service Logger
 logger = logging.getLogger("fs-ai-engine.chat_graph")
@@ -113,13 +114,6 @@ async def vector_retrieval_node(state: ChatState) -> dict[str, Any]:
 
     if AsyncSessionLocal is not None:
         async with AsyncSessionLocal() as session:
-            vec_sim_sql = (
-                "CASE WHEN t.embedding IS NOT NULL "
-                "     THEN (1 - (t.embedding <=> CAST(:q_vec AS vector))) "
-                "     ELSE 0.0 END as vector_sim "
-                if has_vector
-                else "0.0 as vector_sim "
-            )
             query_parts = [
                 "SELECT t.turn_id, t.meeting_id, ",
                 "COALESCE(t.metadata->>'speaker', t.speaker_name, 'Unknown') as speaker_name, ",
@@ -127,7 +121,7 @@ async def vector_retrieval_node(state: ChatState) -> dict[str, Any]:
                 "COALESCE(t.metadata->>'timestamp', to_char(to_timestamp(t.start_time), 'HH24:MI:SS')) as timestamp_str, ",
                 "t.metadata, ",
                 "m.title as meeting_title, top.title as topic_title, ",
-                vec_sim_sql,
+                VEC_SIM_TOKEN,
                 "FROM speaker_turns t ",
                 "LEFT JOIN meetings m ON t.meeting_id = m.id ",
                 "LEFT JOIN meeting_topics top ON t.topic_id = top.id ",
@@ -170,21 +164,21 @@ async def vector_retrieval_node(state: ChatState) -> dict[str, Any]:
 
             # Bound the candidate pool in SQL so cost does not grow with the whole library (keyword-only search has no ranking to cut by)
             candidate_limit = get_settings().retrieval_candidate_limit
-            order_by = " ORDER BY vector_sim DESC, t.start_time ASC" if has_vector else " ORDER BY t.start_time ASC"
-            if has_vector and candidate_limit:
-                order_by += f" LIMIT {int(candidate_limit)}"
-            query_sql = " ".join(query_parts) + order_by
-            res = await session.execute(text(query_sql), params)
-            rows = res.fetchall()
+            use_index = has_vector and candidate_limit > 0 and await pgvector_supports_iterative(session)
+
+            async def run_query(parts: list[str], prm: dict[str, Any]) -> list[Any]:
+                if use_index:
+                    return await fetch_candidates(session, parts, prm, query, candidate_limit)
+                return (await session.execute(text(legacy_sql(parts, has_vector, candidate_limit)), prm)).fetchall()
+
+            rows = await run_query(query_parts, params)
 
             # Resilient Fallback: If strict speaker filter yielded 0 rows, search without speaker filter
             if not rows and resolved_speakers:
                 logger.info(f"[LANGGRAPH: VECTOR_RETRIEVAL] Fallback search across all participants for '{resolved_speakers}'.")
                 fallback_parts = [p for p in query_parts if not p.startswith("AND (t.metadata->>'speaker'") and not p.startswith("AND ((t.metadata->>'speaker'") and not p.startswith("AND (((t.metadata->>'speaker'")]
-                fallback_sql = " ".join(fallback_parts) + order_by
                 fallback_params = {k: v for k, v in params.items() if not k.startswith("spk_")}
-                res = await session.execute(text(fallback_sql), fallback_params)
-                rows = res.fetchall()
+                rows = await run_query(fallback_parts, fallback_params)
 
             # A meeting scope the system GUESSED (from a title, a date or wording in the question) is only a hint.
             # If the same search over all of the account's meetings finds clearly better evidence, the guess was
@@ -194,7 +188,7 @@ async def vector_retrieval_node(state: ChatState) -> dict[str, Any]:
             if scope_sql and state.get("meeting_scope_inferred") and has_vector and not state.get("time_scope"):
                 wide_parts = [p for p in query_parts if p not in scope_sql]
                 wide_params = {k: v for k, v in params.items() if k not in ("m_id", "m_ids")}
-                wide_rows = (await session.execute(text(" ".join(wide_parts) + order_by), wide_params)).fetchall()
+                wide_rows = await run_query(wide_parts, wide_params)
                 scoped_best = max((float(r[10] or 0.0) for r in rows), default=-1.0)
                 wide_best = max((float(r[10] or 0.0) for r in wide_rows), default=-1.0)
                 if wide_best > scoped_best + INFERRED_SCOPE_MARGIN:

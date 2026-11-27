@@ -94,6 +94,12 @@ class Settings(BaseSettings):
     )
     max_turns_per_segment: int = Field(default=10)
 
+    # HNSW vector search (plan 23.5): applied with SET LOCAL around each vector query (pgvector >= 0.8.0)
+    hnsw_ef_search: int = Field(default=100, ge=1, le=1000, validation_alias=AliasChoices("HNSW_EF_SEARCH", "hnsw_ef_search"))
+    hnsw_max_scan_tuples: int = Field(
+        default=20000, ge=1, validation_alias=AliasChoices("HNSW_MAX_SCAN_TUPLES", "hnsw_max_scan_tuples")
+    )
+
     # Request limits (plan 23.4); must match FS-backend
     query_max_chars: int = Field(default=2000, ge=1, validation_alias=AliasChoices("QUERY_MAX_CHARS", "query_max_chars"))
     history_max_messages: int = Field(
