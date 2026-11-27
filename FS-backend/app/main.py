@@ -10,6 +10,7 @@ from .core.database import init_db
 from .core.logging_config import RequestLoggingMiddleware, setup_logging
 from .services.fireflies_sync import cancel_all_syncs
 from .services.ingest_runner import ingest_runner
+from .services.scheduler import scheduler
 
 settings = get_settings()
 setup_logging("FS-backend", settings.backend_env)  # app log lines (ingest runner, jobs) and one access line per request
@@ -75,7 +76,9 @@ async def lifespan(app: FastAPI):
     init_db()
     setup_logging("FS-backend", settings.backend_env)  # Alembic's env.py reloads logging from alembic.ini; restore ours
     await ingest_runner.start()
+    scheduler.start()
     yield
+    await scheduler.stop()
     await cancel_all_syncs()
     await ingest_runner.stop()
 

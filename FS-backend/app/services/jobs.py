@@ -6,7 +6,7 @@ import logging
 from ..core.config import get_settings
 from ..core.crypto import SecretDecryptionError, decrypt_secret
 from ..core.database import SessionLocal, UserModel
-from .fireflies_client import FirefliesClient, get_fireflies_client
+from .fireflies_client import FirefliesAPIError, FirefliesClient, classify_fireflies_error, get_fireflies_client
 from .ingestion_failures import FirefliesDisconnected, record_failure
 from .pipeline_orchestrator import get_backend_pipeline_orchestrator
 
@@ -36,11 +36,23 @@ async def run_fireflies_ingest(
             raise FirefliesDisconnected("Fireflies is disconnected. Reconnect to retry this meeting.")
         client = FirefliesClient(api_key=api_key) if api_key else get_fireflies_client()
         is_link = source != "fireflies_sync"
-        transcript_data = await client.fetch_transcript_by_id(
-            transcript_id=transcript_id,
-            save_to_file=get_settings().save_raw_transcripts if is_link else False,
-            user_id=user_id,
-        )
+        try:
+            transcript_data = await client.fetch_transcript_by_id(
+                transcript_id=transcript_id,
+                save_to_file=get_settings().save_raw_transcripts if is_link else False,
+                user_id=user_id,
+            )
+        except FirefliesAPIError as fetch_exc:
+            if classify_fireflies_error(fetch_exc) != "no_access":
+                raise
+            try:
+                await client.get_current_user()
+            except Exception:
+                raise fetch_exc from None
+            # The key works, so this account simply cannot see the transcript: skipped, not failed.
+            logger.error(f"[Ingest Job] Transcript '{transcript_id}' is not accessible to this account: {fetch_exc}")
+            await asyncio.to_thread(record_failure, user_id, transcript_id, project_id, title, fetch_exc, source, True)
+            return
         logger.info(f"[Ingest Job] Fetched transcript for '{transcript_id}'. Running AI Engine pipeline...")
         result = await get_backend_pipeline_orchestrator().orchestrate_meeting_ingestion(
             transcript_dict=transcript_data,

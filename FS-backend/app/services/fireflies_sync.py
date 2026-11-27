@@ -96,6 +96,20 @@ def _process_transcript(user_id: str, meeting_id: str, title: str, content_hash:
         return outcome
 
 
+def _reconcile(user_id: str, seen_ids: list[str]) -> int:
+    """Step 6: schedule synced meetings missing from a completed full listing for deletion in 7 days."""
+    with SessionLocal() as db:
+        removed = db.execute(
+            text(
+                "UPDATE meetings SET purge_at = now() + interval '7 days' WHERE user_id = :u "
+                "AND source = 'fireflies_sync' AND purge_at IS NULL AND id <> ALL(:seen)"
+            ),
+            {"u": user_id, "seen": seen_ids},
+        ).rowcount
+        db.commit()
+        return int(removed or 0)
+
+
 def _finish(user_id: str, result: dict[str, Any], cursors: datetime | None, full_sync: bool, auto_sync_off: bool) -> None:
     """Step 8: clear the heartbeat, store the result and, when completed, move the cursors."""
     with SessionLocal() as db:
@@ -167,9 +181,13 @@ async def run_sync(user_id: str) -> None:
         )
         result["full_sync"] = full_sync
         from_date = None if full_sync else user["last_synced_at"] - timedelta(hours=24)
+        seen_ids: set[str] = set()
         result["outcome"] = await _page_loop(
-            user_id, client, user["project_id"], from_date, run_started, result, settings.fireflies_sync_max_meetings
+            user_id, client, user["project_id"], from_date, run_started, result, settings.fireflies_sync_max_meetings,
+            seen_ids,
         )
+        if full_sync and result["outcome"] == "completed":
+            result["removed_from_fireflies"] = await asyncio.to_thread(_reconcile, user_id, sorted(seen_ids))
     except FirefliesAPIError as exc:
         kind = classify_fireflies_error(exc)
         if kind == "rate_limited":
@@ -214,12 +232,15 @@ async def _page_loop(
     to_date: datetime,
     result: dict[str, Any],
     cap: int,
+    seen_ids: set[str] | None = None,
 ) -> str:
     """Step 4: page through the listing and queue transcripts. Returns the outcome."""
     skip = 0
     while True:
         page = await client.list_transcripts(limit=PAGE_SIZE, skip=skip, from_date=from_date, to_date=to_date)
         for item in page:
+            if seen_ids is not None:
+                seen_ids.add(item["id"])
             content_hash = BackendPipelineOrchestrator.compute_transcript_hash(item.get("sentences") or [])
             outcome = await asyncio.to_thread(
                 _process_transcript, user_id, item["id"], item.get("title") or "", content_hash, project_id

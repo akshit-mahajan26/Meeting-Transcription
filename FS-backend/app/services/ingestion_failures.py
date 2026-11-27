@@ -1,6 +1,9 @@
 """Background ingestion failures: the error type, a user-safe reason, and recording a FAILED meeting."""
 
 import logging
+from datetime import timedelta
+
+from sqlalchemy import func
 
 from ..core.database import MeetingModel, SessionLocal
 from .fireflies_client import FirefliesAPIError, classify_fireflies_error
@@ -46,13 +49,24 @@ def friendly_failure_reason(exc: Exception) -> str:
     return "Unexpected error while ingesting this meeting. Try again, and contact support if it persists."
 
 
+SKIPPED_SUMMARY = (
+    "Skipped: Fireflies has no transcript with this ID that this account can access. It may have been deleted, "
+    "access may have been removed, or the link may be wrong. It will not be retried automatically."
+)
+
+
 def record_failure(user_id: str, meeting_id: str, project_id: str | None, title: str | None, exc: Exception,
-                   source: str = "link") -> None:
+                   source: str = "link", skipped: bool | None = None) -> None:
     """
     Leave a visible FAILED meeting (reason in `summary`) so a background failure is not silent.
+    Skipped (retry_until NULL, no automatic retry) when `skipped` is True, or when None and Fireflies has no such
+    transcript. A failed meeting gets retry_until = now() + 7 days only if it had none. updated_at is always set.
     A meeting already PROCESSED is never touched. Never raises: recording must not mask the original error.
     """
-    reason = friendly_failure_reason(exc)
+    if skipped is None:
+        skipped = isinstance(exc, FirefliesAPIError) and classify_fireflies_error(exc) == "not_found"
+    reason = SKIPPED_SUMMARY if skipped else friendly_failure_reason(exc)
+    new_retry_until = func.now() + timedelta(days=7)
     db = SessionLocal()
     try:
         meeting = get_owned_meeting(db, user_id, meeting_id)
@@ -64,10 +78,16 @@ def record_failure(user_id: str, meeting_id: str, project_id: str | None, title:
             db.add(MeetingModel(
                 id=meeting_id, user_id=user_id, project_id=project_id, title=title,
                 summary=reason, status="FAILED", source=source,
+                retry_until=None if skipped else new_retry_until, updated_at=func.now(),
             ))
         else:
             meeting.summary = reason
             meeting.status = "FAILED"
+            if skipped:
+                meeting.retry_until = None
+            elif meeting.retry_until is None:
+                meeting.retry_until = new_retry_until
+            meeting.updated_at = func.now()
         db.commit()
     except Exception:
         db.rollback()
