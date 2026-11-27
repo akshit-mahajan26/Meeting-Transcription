@@ -16,6 +16,7 @@ dependencies = [
     "psycopg[binary]>=3.2.0",
     "bcrypt>=5.0.0",
     "pyjwt>=2.15.1",
+    "limits>=5.8.0",
 ]
 
 [tool.uv]

@@ -1,7 +1,7 @@
 from functools import lru_cache
 from pathlib import Path
 
-from pydantic import AliasChoices, Field, field_validator
+from pydantic import AliasChoices, Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 BACKEND_DIR = Path(__file__).resolve().parent.parent.parent
@@ -17,7 +17,8 @@ class Settings(BaseSettings):
     backend_env: str = "development"
 
     # CORS configuration
-    cors_origins: list[str] | str = ["*"]
+    # No browser calls this API directly (the Streamlit frontend calls it server-side), so no CORS headers by default (plan 23.9)
+    cors_origins: list[str] | str = []
 
     # Set false to stop new accounts from registering (existing accounts keep working)
     allow_signup: bool = Field(
@@ -98,6 +99,31 @@ class Settings(BaseSettings):
     db_max_overflow: int = Field(default=5, ge=0, validation_alias=AliasChoices("DB_MAX_OVERFLOW", "db_max_overflow"))
     db_pool_timeout: int = Field(default=30, ge=1, validation_alias=AliasChoices("DB_POOL_TIMEOUT", "db_pool_timeout"))
     db_pool_recycle: int = Field(default=1800, ge=-1, validation_alias=AliasChoices("DB_POOL_RECYCLE", "db_pool_recycle"))
+
+    # In-process ingestion runner (plan 23.1): meetings ingested at once by this backend process
+    ingest_max_concurrency: int = Field(
+        default=3, ge=1, validation_alias=AliasChoices("INGEST_MAX_CONCURRENCY", "ingest_max_concurrency")
+    )
+
+    # Rate limits (plan 23.3), in `limits` notation: "N/period", several separated by ";"
+    rate_limit_login_ip: str = Field(default="20/minute", validation_alias=AliasChoices("RATE_LIMIT_LOGIN_IP", "rate_limit_login_ip"))
+    rate_limit_login_failures: str = Field(
+        default="5/15 minutes", validation_alias=AliasChoices("RATE_LIMIT_LOGIN_FAILURES", "rate_limit_login_failures")
+    )
+    rate_limit_signup_ip: str = Field(default="5/hour", validation_alias=AliasChoices("RATE_LIMIT_SIGNUP_IP", "rate_limit_signup_ip"))
+    rate_limit_query: str = Field(default="20/minute;300/day", validation_alias=AliasChoices("RATE_LIMIT_QUERY", "rate_limit_query"))
+    rate_limit_ingest_link: str = Field(
+        default="30/hour", validation_alias=AliasChoices("RATE_LIMIT_INGEST_LINK", "rate_limit_ingest_link")
+    )
+
+    @model_validator(mode="after")
+    def check_production_secrets(self) -> "Settings":
+        """Production needs strong shared secrets (plan 23.8); development keeps the 16-character minimum."""
+        if self.backend_env.lower() == "production":
+            short = [n for n, v in (("JWT_SECRET", self.jwt_secret), ("ENGINE_API_KEY", self.engine_api_key)) if len(v) < 32]
+            if short:
+                raise ValueError(f"{', '.join(short)} must be at least 32 characters when BACKEND_ENV=production")
+        return self
 
     @property
     def FIREFLIES_API_KEY(self) -> str | None:

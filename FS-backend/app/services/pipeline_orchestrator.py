@@ -116,21 +116,8 @@ class BackendPipelineOrchestrator:
         project_id: str | None = None,
         custom_title: str | None = None,
     ) -> dict[str, Any]:
-        """
-        Execute full asynchronous background ingestion workflow:
-        1. Content hash checksum verification (idempotency).
-        2. HTTP transfer to FS-AI-Engine.
-        3. Atomic 4-tier database persistence.
+        """Full ingestion: idempotency check, AI Engine dispatch, embeddings, atomic 4-tier persistence."""
 
-        Args:
-            transcript_dict: Parsed transcript dict with id, title, sentences, etc.
-            user_id: Account that owns the meeting (stamped on every row written).
-            project_id: Target project identifier.
-            custom_title: Optional title override.
-
-        Returns:
-            Dict containing processing status and summary metrics.
-        """
         meeting_id = str(transcript_dict.get("id"))
         title = custom_title or transcript_dict.get("title") or f"Meeting {meeting_id}"
         date_str = transcript_dict.get("date")
@@ -142,23 +129,28 @@ class BackendPipelineOrchestrator:
         # 1. Compute Content Hash for Idempotency
         content_hash = self.compute_transcript_hash(sentences)
 
-        # 2. Check Database for Idempotency Hit
-        db: Session = SessionLocal()
-        try:
-            existing = get_owned_meeting(db, user_id, meeting_id)
+        # 2. Check Database for Idempotency Hit (sync DB work runs off the event loop)
+        def check_idempotency() -> dict[str, Any] | None:
+            db: Session = SessionLocal()
+            try:
+                existing = get_owned_meeting(db, user_id, meeting_id)
+                if existing and existing.content_hash == content_hash and existing.status == "PROCESSED":
+                    logger.info(f"Idempotency hit for meeting '{meeting_id}' (content_hash: {content_hash[:8]}). Skipping re-processing.")
+                    return {
+                        "status": "success",
+                        "meeting_id": meeting_id,
+                        "is_idempotent_hit": True,
+                        "title": existing.title,
+                        "total_turns": len(existing.turns) if existing.turns else 0,
+                        "total_topics": len(existing.topics) if existing.topics else 0,
+                    }
+                return None
+            finally:
+                db.close()
 
-            if existing and existing.content_hash == content_hash and existing.status == "PROCESSED":
-                logger.info(f"Idempotency hit for meeting '{meeting_id}' (content_hash: {content_hash[:8]}). Skipping re-processing.")
-                return {
-                    "status": "success",
-                    "meeting_id": meeting_id,
-                    "is_idempotent_hit": True,
-                    "title": existing.title,
-                    "total_turns": len(existing.turns) if existing.turns else 0,
-                    "total_topics": len(existing.topics) if existing.topics else 0,
-                }
-        finally:
-            db.close()
+        hit = await asyncio.to_thread(check_idempotency)
+        if hit is not None:
+            return hit
 
         # 3. Dispatch to FS-AI-Engine via HTTP
         # Normalize sentence structures so speaker_id is always str for FS-AI-Engine schemas
@@ -174,15 +166,8 @@ class BackendPipelineOrchestrator:
                 "end_time": float(s.get("end_time") or 0.0),
             })
 
-        ai_payload = {
-            "meeting_id": meeting_id,
-            "title": title,
-            "date": date_str,
-            "duration": duration,
-            "summary": transcript_dict.get("summary"),
-            "sentences": sanitized_sentences,
-        }
-
+        ai_payload = {"meeting_id": meeting_id, "title": title, "date": date_str, "duration": duration,
+                      "summary": transcript_dict.get("summary"), "sentences": sanitized_sentences}
         ai_response = await self._dispatch_to_ai_engine(ai_payload)
 
         # Extract normalized turns, topics, and executive summary from AI Engine response
@@ -192,10 +177,7 @@ class BackendPipelineOrchestrator:
 
         # 1. AI Engine Level 3 intelligence overview (schema key: overview)
         ai_summary_text = (
-            level3_summary.get("overview")
-            or level3_summary.get("executive_overview")
-            or ai_response.get("executive_summary")
-            or ""
+            level3_summary.get("overview") or level3_summary.get("executive_overview") or ai_response.get("executive_summary") or ""
         ).strip()
 
         # 2. Fireflies native transcript summary
@@ -203,11 +185,8 @@ class BackendPipelineOrchestrator:
         ff_summary_text = ""
         if isinstance(ff_summary_raw, dict):
             ff_summary_text = (
-                ff_summary_raw.get("overview")
-                or ff_summary_raw.get("shorthand_bullet")
-                or ff_summary_raw.get("bullet_gist")
-                or ff_summary_raw.get("gist")
-                or ""
+                ff_summary_raw.get("overview") or ff_summary_raw.get("shorthand_bullet")
+                or ff_summary_raw.get("bullet_gist") or ff_summary_raw.get("gist") or ""
             ).strip()
         elif isinstance(ff_summary_raw, str):
             ff_summary_text = ff_summary_raw.strip()
@@ -248,148 +227,147 @@ class BackendPipelineOrchestrator:
                 )
 
         # 4. Atomic 4-Tier Database Upsert
-        db = SessionLocal()
-        try:
-            # Tier 1: Project
-            if project_id:
-                proj = claim_project(db, user_id, project_id)
-                project_id = proj.id
+        def persist() -> dict[str, Any]:
+            nonlocal project_id
+            db = SessionLocal()
+            try:
+                # Tier 1: Project
+                if project_id:
+                    proj = claim_project(db, user_id, project_id)
+                    project_id = proj.id
 
-            # Tier 2: Meeting
-            meeting = get_owned_meeting(db, user_id, meeting_id)
-            if not meeting:
-                meeting = MeetingModel(
-                    id=meeting_id,
-                    user_id=user_id,
-                    project_id=project_id,
-                    title=title,
-                    summary=summary_text,
-                    content_hash=content_hash,
-                    date=date_str,
-                    duration=duration,
-                    status="PROCESSED",
-                )
-                db.add(meeting)
+                # Tier 2: Meeting
+                meeting = get_owned_meeting(db, user_id, meeting_id)
+                if not meeting:
+                    meeting = MeetingModel(
+                        id=meeting_id,
+                        user_id=user_id,
+                        project_id=project_id,
+                        title=title,
+                        summary=summary_text,
+                        content_hash=content_hash,
+                        date=date_str,
+                        duration=duration,
+                        status="PROCESSED",
+                    )
+                    db.add(meeting)
+                    db.flush()
+                else:
+                    # A QUEUED placeholder or a retried FAILED ingestion must not keep its old summary (failure reason)
+                    previous_summary = None if meeting.status in ("FAILED", "QUEUED") else meeting.summary
+                    meeting.project_id = project_id or meeting.project_id
+                    meeting.title = title or meeting.title
+                    meeting.summary = summary_text or previous_summary
+                    meeting.content_hash = content_hash
+                    meeting.date = date_str or meeting.date
+                    meeting.duration = duration or meeting.duration
+                    meeting.status = "PROCESSED"
+                    # Clean old topics and turns
+                    db.query(MeetingTopicModel).filter(MeetingTopicModel.meeting_id == meeting_id).delete()
+                    db.query(SpeakerTurnModel).filter(SpeakerTurnModel.meeting_id == meeting_id).delete()
+                    db.flush()
+
+                # Tier 3: Meeting Topics
+                topic_id_map: dict[int, str] = {}
+                for seg in level2_segments:
+                    seg_idx = int(seg.get("segment_index") or seg.get("topic_index") or 1)
+                    t_id = str(uuid.uuid4())
+                    topic_id_map[seg_idx] = t_id
+                    topic_rec = MeetingTopicModel(
+                        id=t_id,
+                        user_id=user_id,
+                        meeting_id=meeting_id,
+                        topic_index=seg_idx,
+                        title=seg.get("title") or seg.get("topic_name") or f"Topic {seg_idx}",
+                        compiled_text=seg.get("compiled_text") or seg.get("topic_summary") or seg.get("summary") or "",
+                        start_time=float(seg.get("start_time") or 0.0),
+                        end_time=float(seg.get("end_time") or 0.0),
+                    )
+                    db.add(topic_rec)
+
                 db.flush()
-            else:
-                # A retry of a FAILED ingestion must not keep the failure reason as its summary
-                previous_summary = None if meeting.status == "FAILED" else meeting.summary
-                meeting.project_id = project_id or meeting.project_id
-                meeting.title = title or meeting.title
-                meeting.summary = summary_text or previous_summary
-                meeting.content_hash = content_hash
-                meeting.date = date_str or meeting.date
-                meeting.duration = duration or meeting.duration
-                meeting.status = "PROCESSED"
-                # Clean old topics and turns
-                db.query(MeetingTopicModel).filter(MeetingTopicModel.meeting_id == meeting_id).delete()
-                db.query(SpeakerTurnModel).filter(SpeakerTurnModel.meeting_id == meeting_id).delete()
-                db.flush()
 
-            # Tier 3: Meeting Topics
-            topic_id_map: dict[int, str] = {}
-            for seg in level2_segments:
-                seg_idx = int(seg.get("segment_index") or seg.get("topic_index") or 1)
-                t_id = str(uuid.uuid4())
-                topic_id_map[seg_idx] = t_id
-                topic_rec = MeetingTopicModel(
-                    id=t_id,
-                    user_id=user_id,
-                    meeting_id=meeting_id,
-                    topic_index=seg_idx,
-                    title=seg.get("title") or seg.get("topic_name") or f"Topic {seg_idx}",
-                    compiled_text=seg.get("compiled_text") or seg.get("topic_summary") or seg.get("summary") or "",
-                    start_time=float(seg.get("start_time") or 0.0),
-                    end_time=float(seg.get("end_time") or 0.0),
+                # Tier 4: Speaker Turns with Embeddings and Rich Metadata
+                turn_models = []
+                for t in level1_turns:
+                    t_num = int(t.get("turn_number", 1))
+                    turn_id = str(t.get("turn_id") or f"mtg_{meeting_id}_turn_{t_num:03d}")
+                    assigned_topic_id = None
+                    if level2_segments:
+                        # Match turn to topic segment by time window or segment_index
+                        for seg in level2_segments:
+                            s_start = float(seg.get("start_time", 0.0))
+                            s_end = float(seg.get("end_time", 0.0))
+                            t_start = float(t.get("start_time", 0.0))
+                            if s_start <= t_start <= s_end:
+                                assigned_topic_id = topic_id_map.get(
+                                    int(seg.get("segment_index") or seg.get("topic_index") or 1)
+                                )
+                                break
+
+                    spk_name = str(t.get("speaker_name") or t.get("speaker") or "Unknown Speaker")
+                    s_start = float(t.get("start_time", 0.0))
+                    s_end = float(t.get("end_time", 0.0))
+                    dur = float(t.get("duration", 0.0))
+                    is_q = bool(t.get("is_question", False))
+                    is_c = bool(t.get("is_commitment", False))
+                    is_b = bool(t.get("is_blocker", False))
+                    signals_list = t.get("signals") or []
+
+                    meta_dict = {
+                        "speaker": spk_name, "timestamp": _fmt_ts(s_start), "meeting_id": str(meeting_id),
+                        "project_id": str(project_id or "default-project"), "signals": signals_list,
+                        "is_question": is_q, "is_commitment": is_c, "is_blocker": is_b,
+                    }
+
+                    emb_vector = t.get("embedding")
+                    if not (emb_vector and len(emb_vector) == 1536):
+                        emb_vector = None
+
+                    turn_rec = SpeakerTurnModel(
+                        turn_id=turn_id,
+                        user_id=user_id,
+                        meeting_id=meeting_id,
+                        topic_id=assigned_topic_id,
+                        turn_number=t_num,
+                        speaker_id=str(t.get("speaker_id") or t.get("speaker") or "spk_unknown"),
+                        speaker_name=spk_name,
+                        text=str(t.get("text", "")).strip(),
+                        start_time=s_start,
+                        end_time=s_end,
+                        duration=dur,
+                        is_question=is_q,
+                        is_commitment=is_c,
+                        is_blocker=is_b,
+                        _sentence_indices=json.dumps(t.get("sentence_indices", [])),
+                        embedding=emb_vector,
+                        meta_data=meta_dict,
+                    )
+                    turn_models.append(turn_rec)
+
+                db.bulk_save_objects(turn_models)
+                db.commit()
+                logger.info(
+                    f"Successfully persisted meeting '{meeting_id}' ({len(level2_segments)} topics, {len(turn_models)} turns) to database."
                 )
-                db.add(topic_rec)
 
-            db.flush()
-
-            # Tier 4: Speaker Turns with Embeddings and Rich Metadata
-            turn_models = []
-            for t in level1_turns:
-                t_num = int(t.get("turn_number", 1))
-                turn_id = str(t.get("turn_id") or f"mtg_{meeting_id}_turn_{t_num:03d}")
-                assigned_topic_id = None
-                if level2_segments:
-                    # Match turn to topic segment by time window or segment_index
-                    for seg in level2_segments:
-                        s_start = float(seg.get("start_time", 0.0))
-                        s_end = float(seg.get("end_time", 0.0))
-                        t_start = float(t.get("start_time", 0.0))
-                        if s_start <= t_start <= s_end:
-                            assigned_topic_id = topic_id_map.get(
-                                int(seg.get("segment_index") or seg.get("topic_index") or 1)
-                            )
-                            break
-
-                spk_name = str(t.get("speaker_name") or t.get("speaker") or "Unknown Speaker")
-                s_start = float(t.get("start_time", 0.0))
-                s_end = float(t.get("end_time", 0.0))
-                dur = float(t.get("duration", 0.0))
-                is_q = bool(t.get("is_question", False))
-                is_c = bool(t.get("is_commitment", False))
-                is_b = bool(t.get("is_blocker", False))
-                signals_list = t.get("signals") or []
-
-                meta_dict = {
-                    "speaker": spk_name,
-                    "timestamp": _fmt_ts(s_start),
-                    "meeting_id": str(meeting_id),
-                    "project_id": str(project_id or "default-project"),
-                    "signals": signals_list,
-                    "is_question": is_q,
-                    "is_commitment": is_c,
-                    "is_blocker": is_b,
+                return {
+                    "status": "success",
+                    "meeting_id": meeting_id,
+                    "is_idempotent_hit": False,
+                    "title": title,
+                    "total_turns": len(turn_models),
+                    "total_topics": len(level2_segments),
                 }
 
-                emb_vector = t.get("embedding")
-                if not (emb_vector and len(emb_vector) == 1536):
-                    emb_vector = None
+            except Exception as exc:
+                db.rollback()
+                logger.error(f"Database persistence failure for meeting '{meeting_id}': {exc}", exc_info=True)
+                raise PipelineOrchestratorError(f"Database error saving meeting '{meeting_id}': {exc!s}") from exc
+            finally:
+                db.close()
 
-                turn_rec = SpeakerTurnModel(
-                    turn_id=turn_id,
-                    user_id=user_id,
-                    meeting_id=meeting_id,
-                    topic_id=assigned_topic_id,
-                    turn_number=t_num,
-                    speaker_id=str(t.get("speaker_id") or t.get("speaker") or "spk_unknown"),
-                    speaker_name=spk_name,
-                    text=str(t.get("text", "")).strip(),
-                    start_time=s_start,
-                    end_time=s_end,
-                    duration=dur,
-                    is_question=is_q,
-                    is_commitment=is_c,
-                    is_blocker=is_b,
-                    _sentence_indices=json.dumps(t.get("sentence_indices", [])),
-                    embedding=emb_vector,
-                    meta_data=meta_dict,
-                )
-                turn_models.append(turn_rec)
-
-            db.bulk_save_objects(turn_models)
-            db.commit()
-            logger.info(
-                f"Successfully persisted meeting '{meeting_id}' ({len(level2_segments)} topics, {len(turn_models)} turns) to database."
-            )
-
-            return {
-                "status": "success",
-                "meeting_id": meeting_id,
-                "is_idempotent_hit": False,
-                "title": title,
-                "total_turns": len(turn_models),
-                "total_topics": len(level2_segments),
-            }
-
-        except Exception as exc:
-            db.rollback()
-            logger.error(f"Database persistence failure for meeting '{meeting_id}': {exc}", exc_info=True)
-            raise PipelineOrchestratorError(f"Database error saving meeting '{meeting_id}': {exc!s}") from exc
-        finally:
-            db.close()
+        return await asyncio.to_thread(persist)
 
 backend_pipeline_orchestrator = BackendPipelineOrchestrator()
 

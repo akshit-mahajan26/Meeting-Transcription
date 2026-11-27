@@ -32,6 +32,7 @@ def _start_session(result: dict[str, Any]) -> None:
 
 
 def logout() -> None:
+    api_client.logout()  # revoke the token server-side; failures are ignored
     st.session_state.clear()
     st.rerun()
 

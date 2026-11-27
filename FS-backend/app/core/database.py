@@ -74,6 +74,7 @@ class UserModel(Base):
     email = Column(String(255), unique=True, nullable=False, index=True)
     password_hash = Column(String(255), nullable=False)
     created_at = Column(DateTime(timezone=True), default=utc_now, nullable=False)
+    tokens_valid_after = Column(DateTime(timezone=True), nullable=True)  # tokens issued before this are rejected (logout)
 
 
 class ProjectModel(Base):
@@ -102,6 +103,8 @@ class MeetingModel(Base):
     date = Column(String(100), nullable=True)
     duration = Column(Float, nullable=True)
     status = Column(String(50), default="PROCESSED", nullable=False)
+    ingest_requested_at = Column(DateTime(timezone=True), nullable=True)  # queued for ingestion (in-process runner)
+    ingest_claimed_at = Column(DateTime(timezone=True), nullable=True)  # a runner is processing it since this time
     created_at = Column(DateTime(timezone=True), default=utc_now, nullable=False)
     updated_at = Column(DateTime(timezone=True), default=utc_now, onupdate=utc_now, nullable=False)
 

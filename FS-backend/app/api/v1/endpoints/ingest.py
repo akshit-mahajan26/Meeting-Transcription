@@ -1,25 +1,20 @@
 import logging
 import re
+from datetime import UTC, datetime
 from typing import Any
 from urllib.parse import urlparse
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel, Field, HttpUrl
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from ....api.deps import get_current_user
-from ....core.config import get_settings
-from ....core.database import UserModel, get_db
-from ....services.fireflies_client import (
-    FirefliesClient,
-    get_fireflies_client,
-)
-from ....services.ingestion_failures import record_failure
-from ....services.ownership import get_owned_meeting, meeting_taken
-from ....services.pipeline_orchestrator import (
-    BackendPipelineOrchestrator,
-    get_backend_pipeline_orchestrator,
-)
+from ....core.database import MeetingModel, UserModel, get_db
+from ....core.ratelimit import limit_by_user
+from ....services.ingest_runner import ingest_runner
+from ....services.ownership import claim_project, get_owned_meeting, meeting_taken
 
 logger = logging.getLogger(__name__)
 
@@ -100,57 +95,44 @@ def _assert_ids_available(db: Session, user_id: str, meeting_id: str) -> None:
         )
 
 
-async def _process_fireflies_dashboard_task(
-    transcript_id: str,
-    user_id: str,
-    project_id: str | None,
-    title: str | None,
-    fireflies_svc: FirefliesClient,
-    orchestrator_svc: BackendPipelineOrchestrator,
-) -> None:
-    """Background worker task to fetch transcript from Fireflies and orchestrate downstream ingestion."""
-    logger.info(f"[Background Task] Initiating transcript fetch for ID: '{transcript_id}'...")
+def _queue_meeting(db: Session, user_id: str, meeting_id: str, project_id: str | None, title: str | None) -> bool:
+    """Puts the meeting on the ingestion queue in one transaction. False when it is already queued."""
+    _assert_ids_available(db, user_id, meeting_id)
     try:
-        transcript_data = await fireflies_svc.fetch_transcript_by_id(
-            transcript_id=transcript_id,
-            save_to_file=get_settings().save_raw_transcripts,
-            user_id=user_id,
-        )
-        logger.info(f"[Background Task] Fetched transcript for '{transcript_id}'. Running AI Engine pipeline...")
-        result = await orchestrator_svc.orchestrate_meeting_ingestion(
-            transcript_dict=transcript_data,
-            user_id=user_id,
-            project_id=project_id,
-            custom_title=title,
-        )
-        logger.info(
-            f"[Background Task] Successfully ingested meeting '{result.get('meeting_id')}': "
-            f"is_idempotent_hit={result.get('is_idempotent_hit')}, total_turns={result.get('total_turns')}, "
-            f"total_topics={result.get('total_topics')}"
-        )
-    except Exception as exc:
-        logger.error(f"[Background Task] Failed to process transcript '{transcript_id}': {exc}", exc_info=True)
-        record_failure(user_id, transcript_id, project_id, title, exc)
-
-
-async def _process_raw_media_task(
-    media_url: str,
-    title: str | None,
-    fireflies_svc: FirefliesClient,
-) -> None:
-    """Background worker task to submit external media recording to Fireflies uploadAudio mutation."""
-    logger.info(f"[Background Task] Submitting media file URL to Fireflies: '{media_url}'...")
-    try:
-        result = await fireflies_svc.upload_audio_from_url(audio_url=media_url, title=title)
-        logger.info(f"[Background Task] Audio upload mutation completed successfully: {result}")
-    except Exception as exc:
-        logger.error(f"[Background Task] Failed to upload audio file '{media_url}': {exc}", exc_info=True)
+        # Row lock: concurrent requests for the same meeting queue it once
+        meeting = get_owned_meeting(db, user_id, meeting_id, True)
+        now = datetime.now(UTC)
+        scoped_project = claim_project(db, user_id, project_id).id if project_id else None
+        if meeting is None:
+            db.add(MeetingModel(
+                id=meeting_id, user_id=user_id, project_id=scoped_project, title=title,
+                status="QUEUED", ingest_requested_at=now,
+            ))
+        elif meeting.ingest_requested_at is not None:
+            db.rollback()
+            return False
+        else:
+            meeting.ingest_requested_at = now
+            meeting.ingest_claimed_at = None
+            if title:
+                meeting.title = title
+            if scoped_project:
+                meeting.project_id = scoped_project
+        db.commit()
+        return True
+    except IntegrityError:  # a concurrent request inserted the same new meeting first
+        db.rollback()
+        return False
+    except Exception:
+        db.rollback()
+        raise
 
 
 @router.post(
     "/ingest-link",
     response_model=IngestLinkResponse,
     status_code=status.HTTP_202_ACCEPTED,
+    dependencies=[Depends(limit_by_user("rate_limit_ingest_link"))],
     summary="Asynchronous Meeting Link Ingestion",
     description=(
         "Accepts a meeting link (Fireflies dashboard view or raw audio/video recording), "
@@ -161,11 +143,8 @@ async def _process_raw_media_task(
 )
 async def ingest_meeting_link(
     payload: IngestLinkRequest,
-    background_tasks: BackgroundTasks,
     user: UserModel = Depends(get_current_user),
     db: Session = Depends(get_db),
-    fireflies_svc: FirefliesClient = Depends(get_fireflies_client),
-    orchestrator_svc: BackendPipelineOrchestrator = Depends(get_backend_pipeline_orchestrator),
 ) -> IngestLinkResponse:
     url_str = str(payload.link).strip()
 
@@ -182,22 +161,13 @@ async def ingest_meeting_link(
     link_type = parsed_link["type"]
     identifier = parsed_link["id"]
 
-    # 2. Queue appropriate background worker
+    # 2. Queue the job for the in-process runner
     already_ingested = False
     if link_type == "FIREFLIES_DASHBOARD":
-        _assert_ids_available(db, user.id, identifier)
         effective_title = payload.title or parsed_link.get("title")
-        background_tasks.add_task(
-            _process_fireflies_dashboard_task,
-            transcript_id=identifier,
-            user_id=user.id,
-            project_id=payload.project_id,
-            title=effective_title,
-            fireflies_svc=fireflies_svc,
-            orchestrator_svc=orchestrator_svc,
-        )
-        existing = get_owned_meeting(db, user.id, identifier)
+        existing = await run_in_threadpool(get_owned_meeting, db, user.id, identifier)
         already_ingested = existing is not None and existing.status == "PROCESSED"
+        queued = await run_in_threadpool(_queue_meeting, db, user.id, identifier, payload.project_id, effective_title)
         msg = (
             f"Fireflies transcript '{identifier}' queued for background retrieval, "
             f"AI chunking, and database persistence."
@@ -207,19 +177,20 @@ async def ingest_meeting_link(
                 f"Meeting '{identifier}' is already in your library. It will only be re-processed "
                 f"if its transcript has changed in Fireflies."
             )
+        if queued:
+            ingest_runner.wake()
     else:  # RAW_MEDIA
-        background_tasks.add_task(
-            _process_raw_media_task,
-            media_url=identifier,
-            title=payload.title,
-            fireflies_svc=fireflies_svc,
-        )
+        queued = True
+        ingest_runner.submit_media(identifier, payload.title)
         msg = (
             f"Raw media recording from '{identifier}' submitted to Fireflies API "
             f"for asynchronous transcription."
         )
+    if not queued:
+        msg = "This meeting is already being processed."
+        already_ingested = False
 
-    logger.info(f"Queued background link ingestion for {link_type} ({identifier}).")
+    logger.info(f"Accepted link ingestion for {link_type} ({identifier}).")
 
     return IngestLinkResponse(
         status="queued",

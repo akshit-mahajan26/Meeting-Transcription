@@ -35,6 +35,17 @@ def normalize_meeting_date(raw: str | None) -> str | None:
     seconds = number / 1000 if number > 1e11 else number  # epoch ms vs seconds
     return datetime.fromtimestamp(seconds, tz=UTC).isoformat()
 
+def ingestion_status(meeting) -> str:
+    """API-facing ingestion state: processing, queued, processed or failed."""
+    if meeting.ingest_claimed_at is not None:
+        return "processing"
+    if meeting.ingest_requested_at is not None:
+        return "queued"
+    if meeting.status == "PROCESSED":
+        return "processed"
+    if meeting.status == "FAILED":
+        return "failed"
+    return "queued"
 
 
 class MeetingService:
@@ -69,9 +80,11 @@ class MeetingService:
                     date=normalize_meeting_date(m.date),
                     duration=m.duration,
                     status=m.status,
+                    ingestion_status=ingestion_status(m),
                     project_id=unscope_project_id(m.project_id, self.user_id),
                     total_turns=turn_count or 0,
                     created_at=m.created_at,
+                    updated_at=m.updated_at,
                 )
             )
         return summaries
@@ -139,6 +152,7 @@ class MeetingService:
             date=normalize_meeting_date(meeting.date),
             duration=meeting.duration,
             status=meeting.status,
+            ingestion_status=ingestion_status(meeting),
             project_id=unscope_project_id(meeting.project_id, self.user_id),
             total_turns=len(turn_responses),
             created_at=meeting.created_at,

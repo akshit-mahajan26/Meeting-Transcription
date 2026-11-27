@@ -1,5 +1,6 @@
 """Password hashing and JWT access tokens."""
 
+import uuid
 from datetime import UTC, datetime, timedelta
 
 import bcrypt
@@ -24,16 +25,24 @@ def verify_password(password: str, password_hash: str) -> bool:
 
 def create_access_token(user_id: str) -> str:
     settings = get_settings()
-    expires = datetime.now(UTC) + timedelta(minutes=settings.access_token_expire_minutes)
-    return jwt.encode({"sub": user_id, "exp": expires}, settings.jwt_secret, algorithm=settings.jwt_algorithm)
+    now = datetime.now(UTC)
+    expires = now + timedelta(minutes=settings.access_token_expire_minutes)
+    claims = {"sub": user_id, "exp": expires, "iat": int(now.timestamp()), "jti": uuid.uuid4().hex}
+    return jwt.encode(claims, settings.jwt_secret, algorithm=settings.jwt_algorithm)
 
 
-def decode_access_token(token: str) -> str | None:
-    """Returns the user id from a valid token, or None if it is invalid or expired."""
+def decode_access_token_claims(token: str) -> dict | None:
+    """Returns the verified payload of a valid token, or None if it is invalid, expired or has no user id."""
     settings = get_settings()
     try:
         payload = jwt.decode(token, settings.jwt_secret, algorithms=[settings.jwt_algorithm])
     except jwt.PyJWTError:
         return None
     sub = payload.get("sub")
-    return sub if isinstance(sub, str) and sub else None
+    return payload if isinstance(sub, str) and sub else None
+
+
+def decode_access_token(token: str) -> str | None:
+    """Returns the user id from a valid token, or None if it is invalid or expired."""
+    claims = decode_access_token_claims(token)
+    return claims["sub"] if claims else None

@@ -83,7 +83,7 @@ def _detail(meeting_id: str) -> None:
 def render() -> None:
     page_header("Meetings", "Browse ingested meetings and inspect their transcripts.")
     all_meetings = load_meetings()
-    meetings = [m for m in all_meetings if m.get("status") != "FAILED"]
+    meetings = [m for m in all_meetings if m.get("status") == "PROCESSED"]
     failed = [m for m in all_meetings if m.get("status") == "FAILED"]
     if failed:
         with st.container(border=True):

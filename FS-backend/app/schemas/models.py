@@ -66,6 +66,7 @@ class MeetingResponse(BaseModel):
     date: str | None = None
     duration: float | None = None
     status: str
+    ingestion_status: str = "processed"
     project_id: str | None = None
     total_turns: int
     created_at: datetime
@@ -83,9 +84,11 @@ class MeetingSummary(BaseModel):
     date: str | None = None
     duration: float | None = None
     status: str
+    ingestion_status: str = "processed"
     project_id: str | None = None
     total_turns: int
     created_at: datetime
+    updated_at: datetime | None = None
 
     model_config = {"from_attributes": True}
 

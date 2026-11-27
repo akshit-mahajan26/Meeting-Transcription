@@ -92,6 +92,29 @@ class MeetingIntelligenceClient:
         token = state.get(TOKEN_KEY) if state is not None else None
         return {"Authorization": f"Bearer {token}"} if token else {}
 
+    @staticmethod
+    def _client_ip_headers() -> dict[str, str]:
+        """The browser's IP as X-Forwarded-For (the backend only sees this server); empty outside a Streamlit run."""
+        try:
+            import streamlit as st
+
+            ip = st.context.ip_address
+        except Exception:
+            return {}
+        return {"X-Forwarded-For": str(ip)} if ip else {}
+
+    def _request_headers(self) -> dict[str, str]:
+        return {**self._client_ip_headers(), **self._auth_headers()}
+
+    def logout(self) -> None:
+        """Ask the backend to revoke the current token; failures are ignored (the local session is cleared anyway)."""
+        headers = self._request_headers()
+        if not self.base_url or "Authorization" not in headers:
+            return
+        with contextlib.suppress(Exception):
+            with httpx.Client(timeout=5.0) as client:
+                client.post(f"{self.base_url}/api/v1/auth/logout", headers=headers)
+
     def _expire_session(self) -> None:
         """The backend rejected our token: drop the login so the app shows the login page again."""
         state = _session_state()
@@ -105,7 +128,11 @@ class MeetingIntelligenceClient:
             return {"success": False, "error": "FASTAPI_BACKEND_URL is not configured."}
         try:
             with httpx.Client(timeout=min(self.timeout, 20.0)) as client:
-                res = client.post(f"{self.base_url}/api/v1/auth/{path}", json={"email": email, "password": password})
+                res = client.post(
+                    f"{self.base_url}/api/v1/auth/{path}",
+                    json={"email": email, "password": password},
+                    headers=self._client_ip_headers(),
+                )
         except Exception as e:
             return {"success": False, "error": f"Cannot reach the backend: {e}"}
         if res.status_code in (200, 201):
@@ -175,7 +202,7 @@ class MeetingIntelligenceClient:
                 response = client.post(
                     self.query_url,
                     json=payload,
-                    headers={"Content-Type": "application/json", **self._auth_headers()}
+                    headers={"Content-Type": "application/json", **self._request_headers()}
                 )
 
                 if response.status_code == 200:
@@ -245,7 +272,7 @@ class MeetingIntelligenceClient:
             with httpx.Client(timeout=self.timeout) as client:
                 logger.info(f"[APIClient] Streaming query to {self.query_stream_url}: '{prompt}'")
                 with client.stream(
-                    "POST", self.query_stream_url, json=payload, headers={"Content-Type": "application/json", **self._auth_headers()}
+                    "POST", self.query_stream_url, json=payload, headers={"Content-Type": "application/json", **self._request_headers()}
                 ) as response:
                     if response.status_code != 200:
                         response.read()
@@ -296,7 +323,7 @@ class MeetingIntelligenceClient:
         endpoint = f"{self.meetings_api_url}/projects"
         try:
             with httpx.Client(timeout=min(self.timeout, 15.0)) as client:
-                res = client.get(endpoint, headers=self._auth_headers())
+                res = client.get(endpoint, headers=self._request_headers())
                 if res.status_code == 401:
                     self._expire_session()
                 if res.status_code == 200:
@@ -313,7 +340,7 @@ class MeetingIntelligenceClient:
         endpoint = f"{self.meetings_api_url}/"
         try:
             with httpx.Client(timeout=min(self.timeout, 20.0)) as client:
-                res = client.get(endpoint, headers=self._auth_headers())
+                res = client.get(endpoint, headers=self._request_headers())
                 if res.status_code == 401:
                     self._expire_session()
                 if res.status_code == 200:
@@ -330,7 +357,7 @@ class MeetingIntelligenceClient:
         endpoint = f"{self.meetings_api_url}/{meeting_id}"
         try:
             with httpx.Client(timeout=min(self.timeout, 25.0)) as client:
-                res = client.get(endpoint, headers=self._auth_headers())
+                res = client.get(endpoint, headers=self._request_headers())
                 if res.status_code == 401:
                     self._expire_session()
                 if res.status_code == 200:
@@ -353,7 +380,7 @@ class MeetingIntelligenceClient:
         endpoint = f"{self.meetings_api_url}/ingest-link"
         try:
             with httpx.Client(timeout=self.timeout) as client:
-                res = client.post(endpoint, json=payload, headers=self._auth_headers())
+                res = client.post(endpoint, json=payload, headers=self._request_headers())
                 if res.status_code in (200, 201, 202):
                     return {"success": True, "data": res.json()}
                 if res.status_code == 401:

@@ -66,9 +66,11 @@ def meeting_taken(db: Session, user_id: str, meeting_id: str) -> bool:
     return meeting is not None and meeting.user_id != user_id
 
 
-def get_owned_meeting(db: Session, user_id: str, meeting_id: str) -> MeetingModel | None:
-    """The account's meeting, or None if new. Refuses an ID owned by another account."""
-    meeting = db.query(MeetingModel).filter(MeetingModel.id == meeting_id).first()
+def get_owned_meeting(db: Session, user_id: str, meeting_id: str, for_update: bool = False) -> MeetingModel | None:
+    """The account's meeting, or None if new. Refuses an ID owned by another account.
+    With for_update, the row stays locked until the transaction ends (concurrent requests then run one at a time)."""
+    query = db.query(MeetingModel).filter(MeetingModel.id == meeting_id)
+    meeting = (query.with_for_update() if for_update else query).first()
     if meeting is not None and meeting.user_id != user_id:
         raise OwnershipError(f"Meeting '{meeting_id}' belongs to another account.")
     return meeting

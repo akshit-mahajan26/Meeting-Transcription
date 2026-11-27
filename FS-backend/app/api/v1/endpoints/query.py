@@ -13,6 +13,7 @@ from typing import Any, Literal
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
@@ -20,6 +21,7 @@ from sqlalchemy.orm import Session
 from ....api.deps import get_current_user
 from ....core.config import get_settings
 from ....core.database import UserModel, get_db
+from ....core.ratelimit import limit_by_user
 from ....services.ownership import resolve_project_id
 
 logger = logging.getLogger("api-gateway")
@@ -111,6 +113,7 @@ def _engine_http_error(resp: httpx.Response) -> HTTPException:
     "/query",
     response_model=QueryResponse,
     status_code=status.HTTP_200_OK,
+    dependencies=[Depends(limit_by_user("rate_limit_query"))],
     summary="Transparent Proxy Gateway to FS-AI-Engine",
     description="Forwards client queries directly to FS-AI-Engine (/api/v1/engine/query) with zero local RAG processing.",
 )
@@ -127,7 +130,7 @@ async def proxy_query_endpoint(
     target_endpoint = _engine_url("query")
     logger.info(f"[API Gateway] Proxying query request -> {target_endpoint}")
 
-    payload = _engine_payload(request, user, db)
+    payload = await run_in_threadpool(_engine_payload, request, user, db)
 
     try:
         async with httpx.AsyncClient(timeout=settings.ai_engine_timeout_seconds) as client:
@@ -167,6 +170,7 @@ def _sse_error(message: str) -> bytes:
 @router.post(
     "/query/stream",
     status_code=status.HTTP_200_OK,
+    dependencies=[Depends(limit_by_user("rate_limit_query"))],
     response_class=StreamingResponse,
     summary="Streaming proxy to FS-AI-Engine",
     description=(
@@ -183,7 +187,7 @@ async def proxy_query_stream_endpoint(
     target_endpoint = _engine_url("query/stream")
     logger.info(f"[API Gateway] Proxying streaming query request -> {target_endpoint}")
 
-    payload = _engine_payload(request, user, db)
+    payload = await run_in_threadpool(_engine_payload, request, user, db)
     client = httpx.AsyncClient(timeout=settings.ai_engine_timeout_seconds)  # the read timeout applies between chunks
     try:
         upstream = await client.send(

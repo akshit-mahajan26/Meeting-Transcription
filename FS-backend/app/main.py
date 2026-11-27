@@ -7,8 +7,11 @@ from fastapi.responses import JSONResponse
 from .api.v1.router import api_router
 from .core.config import get_settings
 from .core.database import init_db
+from .core.logging_config import RequestLoggingMiddleware, setup_logging
+from .services.ingest_runner import ingest_runner
 
 settings = get_settings()
+setup_logging("FS-backend", settings.backend_env)  # app log lines (ingest runner, jobs) and one access line per request
 
 
 class MaxBodySizeMiddleware:
@@ -69,7 +72,10 @@ class MaxBodySizeMiddleware:
 async def lifespan(app: FastAPI):
     """Lifespan event handler to initialize database schema on startup."""
     init_db()
+    setup_logging("FS-backend", settings.backend_env)  # Alembic's env.py reloads logging from alembic.ini; restore ours
+    await ingest_runner.start()
     yield
+    await ingest_runner.stop()
 
 
 app = FastAPI(
@@ -82,19 +88,20 @@ app = FastAPI(
 )
 
 app.add_middleware(MaxBodySizeMiddleware, max_bytes=settings.max_request_body_bytes)
+app.add_middleware(RequestLoggingMiddleware)  # outermost: logs every request, including rejected ones
 
-# CORS Middleware
+# CORS Middleware: only when origins are configured
 origins = settings.cors_origins
 if isinstance(origins, str):
     origins = [origins]
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=origins if origins != ["*"] else ["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+if origins:
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=origins,
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
 
 # Register versioned API router under /api/v1
 app.include_router(api_router, prefix=settings.api_v1_str)

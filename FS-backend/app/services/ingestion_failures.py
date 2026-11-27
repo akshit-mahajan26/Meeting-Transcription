@@ -49,7 +49,7 @@ def record_failure(user_id: str, meeting_id: str, project_id: str | None, title:
     db = SessionLocal()
     try:
         meeting = get_owned_meeting(db, user_id, meeting_id)
-        if meeting is not None and meeting.status != "FAILED":
+        if meeting is not None and meeting.status == "PROCESSED":
             return
         if project_id:
             project_id = claim_project(db, user_id, project_id).id
@@ -60,6 +60,7 @@ def record_failure(user_id: str, meeting_id: str, project_id: str | None, title:
             ))
         else:
             meeting.summary = reason
+            meeting.status = "FAILED"
         db.commit()
     except Exception:
         db.rollback()

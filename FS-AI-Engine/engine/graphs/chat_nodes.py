@@ -92,12 +92,12 @@ async def load_context_node(state: ChatState) -> dict[str, Any]:
     async with AsyncSessionLocal() as session:
         if project_id:
             m_res = await session.execute(
-                text("SELECT id, title, project_id, date FROM meetings WHERE user_id = :u_id AND project_id = :p_id AND status <> 'FAILED'"),
+                text("SELECT id, title, project_id, date FROM meetings WHERE user_id = :u_id AND project_id = :p_id AND status = 'PROCESSED'"),
                 {"u_id": user_id, "p_id": project_id},
             )
         else:
             m_res = await session.execute(
-                text("SELECT id, title, project_id, date FROM meetings WHERE user_id = :u_id AND status <> 'FAILED'"), {"u_id": user_id}
+                text("SELECT id, title, project_id, date FROM meetings WHERE user_id = :u_id AND status = 'PROCESSED'"), {"u_id": user_id}
             )
         meetings_db = m_res.fetchall()
         available_meetings = [
@@ -121,7 +121,7 @@ async def load_context_node(state: ChatState) -> dict[str, Any]:
             try:
                 async with session.begin_nested():
                     m_p_res = await session.execute(
-                        text("SELECT DISTINCT project_id FROM meetings WHERE user_id = :u_id AND project_id IS NOT NULL AND status <> 'FAILED'"),
+                        text("SELECT DISTINCT project_id FROM meetings WHERE user_id = :u_id AND project_id IS NOT NULL AND status = 'PROCESSED'"),
                         {"u_id": user_id},
                     )
                     available_projects = [

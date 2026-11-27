@@ -1,10 +1,20 @@
+from datetime import UTC, datetime
+
 from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi.concurrency import run_in_threadpool
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from ....api.deps import get_current_user
 from ....core.config import get_settings
-from ....core.database import MeetingModel, MeetingTopicModel, ProjectModel, SpeakerTurnModel, UserModel, get_db
+from ....core.database import UserModel, get_db
+from ....core.ratelimit import (
+    clear_login_failures,
+    limit_by_ip,
+    login_throttled,
+    login_throttled_error,
+    record_login_failure,
+)
 from ....core.security import create_access_token, hash_password, verify_password
 from ....schemas.auth import Credentials, TokenResponse, UserResponse
 
@@ -24,7 +34,9 @@ def _token_for(user: UserModel) -> TokenResponse:
     status_code=status.HTTP_201_CREATED,
     summary="Create an account",
 )
-def signup(payload: Credentials, db: Session = Depends(get_db)) -> TokenResponse:
+def signup(
+    payload: Credentials, db: Session = Depends(get_db), _limit: None = Depends(limit_by_ip("rate_limit_signup_ip"))
+) -> TokenResponse:
     if not get_settings().allow_signup:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Sign-up is disabled on this server.")
     if db.query(UserModel).filter(UserModel.email == payload.email).first():
@@ -32,9 +44,6 @@ def signup(payload: Credentials, db: Session = Depends(get_db)) -> TokenResponse
     user = UserModel(email=payload.email, password_hash=hash_password(payload.password))
     db.add(user)
     db.flush()
-    # Data ingested before accounts existed has no owner; the next account to sign up adopts it
-    for model in (ProjectModel, MeetingModel, MeetingTopicModel, SpeakerTurnModel):
-        db.query(model).filter(model.user_id.is_(None)).update({model.user_id: user.id}, synchronize_session=False)
     try:
         db.commit()
     except IntegrityError as err:  # two signups racing on the same email
@@ -46,13 +55,53 @@ def signup(payload: Credentials, db: Session = Depends(get_db)) -> TokenResponse
     return _token_for(user)
 
 
-@router.post("/login", response_model=TokenResponse, summary="Log in and receive an access token")
-def login(payload: Credentials, db: Session = Depends(get_db)) -> TokenResponse:
+def _check_login(payload: Credentials, db: Session) -> UserModel | None:
     user = db.query(UserModel).filter(UserModel.email == payload.email).first()
     password_ok = verify_password(payload.password, user.password_hash if user else _DUMMY_HASH)
-    if user is None or not password_ok:
+    return user if user is not None and password_ok else None
+
+
+@router.post(
+    "/login",
+    response_model=TokenResponse,
+    summary="Log in and receive an access token",
+    dependencies=[Depends(limit_by_ip("rate_limit_login_ip"))],
+)
+async def login(payload: Credentials, db: Session = Depends(get_db)) -> TokenResponse:
+    retry_after = await login_throttled(payload.email)
+    if retry_after is not None:
+        raise login_throttled_error(retry_after)
+    user = await run_in_threadpool(_check_login, payload, db)
+    if user is None:
+        await record_login_failure(payload.email)
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid email or password.")
-    return _token_for(user)
+    await clear_login_failures(payload.email)
+    return await run_in_threadpool(_token_for, user)
+
+
+def _sign_out_everywhere(user_id: str, db: Session) -> None:
+    db.query(UserModel).filter(UserModel.id == user_id).update({"tokens_valid_after": datetime.now(UTC)})
+    db.commit()
+
+
+@router.post(
+    "/logout",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Log out (signs the user out on every device)",
+)
+async def logout(user: UserModel = Depends(get_current_user), db: Session = Depends(get_db)) -> None:
+    """Invalidates every token issued to the user so far, so this signs them out on every device."""
+    await run_in_threadpool(_sign_out_everywhere, user.id, db)
+
+
+@router.post(
+    "/logout-all",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Log out on every device",
+)
+async def logout_all(user: UserModel = Depends(get_current_user), db: Session = Depends(get_db)) -> None:
+    """Invalidates every token issued to the user so far (same effect as /logout)."""
+    await run_in_threadpool(_sign_out_everywhere, user.id, db)
 
 
 @router.get("/me", response_model=UserResponse, summary="The authenticated user")

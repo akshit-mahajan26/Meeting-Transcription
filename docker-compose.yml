@@ -1,0 +1,72 @@
+# Meeting Intelligence stack.
+# Only the frontend publishes a port (8501). Postgres, the engine and the backend are reachable
+# only on the internal network. In production put an HTTPS reverse proxy with WebSocket support
+# (Streamlit needs it) in front of the frontend; do not expose any other service.
+# The backend trusts X-Forwarded-For only from the frontend's fixed address (FORWARDED_ALLOW_IPS).
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg17
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_DB: ${POSTGRES_DB:-meeting_intelligence}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks: [internal]
+    restart: unless-stopped
+
+  engine:
+    build: ./FS-AI-Engine
+    env_file: ./FS-AI-Engine/.env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-meeting_intelligence}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks: [internal]
+    restart: unless-stopped
+
+  backend:
+    build: ./FS-backend
+    env_file: ./FS-backend/.env
+    stop_grace_period: 2m  # lets in-process ingestions finish; unfinished ones resume from the meetings table
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-meeting_intelligence}
+      AI_ENGINE_URL: http://engine:8001
+      FORWARDED_ALLOW_IPS: 172.28.0.10
+    depends_on:
+      postgres:
+        condition: service_healthy
+      engine:
+        condition: service_healthy
+    networks: [internal]
+    restart: unless-stopped
+
+  frontend:
+    build: ./FS-frontend
+    env_file: ./FS-frontend/.env
+    environment:
+      FASTAPI_BACKEND_URL: http://backend:8000
+    ports:
+      - "8501:8501"
+    depends_on:
+      - backend
+    networks:
+      internal:
+        ipv4_address: 172.28.0.10
+    restart: unless-stopped
+
+networks:
+  internal:
+    ipam:
+      config:
+        - subnet: 172.28.0.0/16
+
+volumes:
+  postgres_data:

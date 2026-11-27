@@ -13,7 +13,7 @@ from utils.formatting import esc
 
 def render() -> None:
     all_meetings = load_meetings()
-    meetings = [m for m in all_meetings if m.get("status") != "FAILED"]
+    meetings = [m for m in all_meetings if m.get("status") == "PROCESSED"]
     projects = known_projects(meetings)
     page_header("Overview", "Your meeting knowledge base at a glance.")
     if failed := len(all_meetings) - len(meetings):

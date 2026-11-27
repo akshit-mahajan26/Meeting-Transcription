@@ -2,7 +2,7 @@ from functools import lru_cache
 from pathlib import Path
 
 from dotenv import load_dotenv
-from pydantic import AliasChoices, Field
+from pydantic import AliasChoices, Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # Determine parent directories for environment file resolution
@@ -132,6 +132,13 @@ class Settings(BaseSettings):
     db_max_overflow: int = Field(default=10, ge=0, validation_alias=AliasChoices("DB_MAX_OVERFLOW", "db_max_overflow"))
     db_pool_timeout: int = Field(default=30, ge=1, validation_alias=AliasChoices("DB_POOL_TIMEOUT", "db_pool_timeout"))
     db_pool_recycle: int = Field(default=1800, ge=-1, validation_alias=AliasChoices("DB_POOL_RECYCLE", "db_pool_recycle"))
+
+    @model_validator(mode="after")
+    def check_production_secrets(self) -> "Settings":
+        """Production needs a strong shared secret with FS-backend (plan 23.8)."""
+        if self.ai_engine_env.lower() == "production" and len(self.engine_api_key) < 32:
+            raise ValueError("ENGINE_API_KEY must be at least 32 characters when AI_ENGINE_ENV=production")
+        return self
 
     @property
     def llm_model(self) -> str:
