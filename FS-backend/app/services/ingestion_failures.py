@@ -6,6 +6,7 @@ from datetime import timedelta
 from sqlalchemy import func
 
 from ..core.database import MeetingModel, SessionLocal
+from .failure_kinds import KINDS, reason_text
 from .fireflies_client import FirefliesAPIError, classify_fireflies_error
 from .ownership import claim_project, get_owned_meeting
 
@@ -13,60 +14,75 @@ logger = logging.getLogger(__name__)
 
 
 class PipelineOrchestratorError(Exception):
-    """Exception raised when background ingestion orchestration fails."""
+    """Background ingestion orchestration failed; `kind` is the failure_kinds key."""
+
+    def __init__(self, message: str, kind: str = "unknown"):
+        super().__init__(message)
+        self.kind = kind
+
+
+class EmptyTranscript(Exception):
+    """The transcript has no sentence with text; nothing is sent to the engine. Carries the content hash."""
+
+    def __init__(self, message: str, content_hash: str | None = None):
+        super().__init__(message)
+        self.content_hash = content_hash
 
 
 class FirefliesDisconnected(Exception):
-    """The owner has no usable linked Fireflies key for a meeting that needs one."""
+    """The owner has no usable linked Fireflies key for a meeting that needs one. `kind` is disconnected or key_unreadable."""
+
+    def __init__(self, message: str, kind: str = "disconnected"):
+        super().__init__(message)
+        self.kind = kind
 
 
-def friendly_failure_reason(exc: Exception) -> str:
-    """User-facing reason for a failed ingestion. Raw exceptions can carry internal URLs and response bodies,
-    so only a message chosen by error type is shown; the full exception is in the server log."""
+_FIREFLIES_KINDS = {
+    "not_found": "not_found", "no_access": "no_access", "key_rejected": "key_rejected",
+    "account_problem": "fireflies_account", "rate_limited": "rate_limited",
+    "client_bug": "fireflies_invalid_request", "temporary": "fireflies_unavailable",
+}
+
+
+def failure_kind_for(exc: BaseException) -> tuple[str, str | None]:
+    """The one failure kind (failure_kinds key) and optional detail for an ingestion exception."""
     if isinstance(exc, FirefliesAPIError):
-        kind = classify_fireflies_error(exc)
-        if kind == "not_found":
-            return "This transcript was not found in Fireflies. Check the link and try again."
-        if kind == "no_access":
-            return "This Fireflies account cannot access this transcript. It may belong to someone else, or access was removed."
-        if kind == "key_rejected":
-            return "Fireflies rejected the API key. Contact your administrator."
-        if kind == "account_problem":
-            # Fireflies' own text (without our "GraphQL Error from Fireflies:" prefix), only when Fireflies marks it safe to show
+        key = _FIREFLIES_KINDS.get(classify_fireflies_error(exc), "fireflies_unavailable")
+        detail = None
+        if key == "fireflies_account" and exc.friendly:
             first = exc.details[0] if isinstance(exc.details, list) and exc.details and isinstance(exc.details[0], dict) else {}
-            if exc.friendly and (first.get("message") or exc.message):
-                return str(first.get("message") or exc.message)
-            return "Fireflies refused the request because of an account or plan restriction."
-        if kind == "rate_limited":
-            return "Fireflies rate limit reached. Try again in a few minutes."
-        if kind == "temporary":
-            return "Could not reach Fireflies. Try again in a few minutes."
-        return "Fireflies could not return this transcript. Try again later."
-    if isinstance(exc, FirefliesDisconnected):
-        return str(exc)
-    if isinstance(exc, PipelineOrchestratorError):
-        return "Processing the transcript failed. Try again in a few minutes."
-    return "Unexpected error while ingesting this meeting. Try again, and contact support if it persists."
+            detail = str(first.get("message") or exc.message or "") or None
+        return key, detail
+    if isinstance(exc, FirefliesDisconnected | PipelineOrchestratorError):
+        return (exc.kind if exc.kind in KINDS else "unknown"), None
+    if isinstance(exc, EmptyTranscript):
+        return "no_transcript", None
+    if isinstance(exc, TimeoutError):  # asyncio.TimeoutError is TimeoutError
+        return "timeout", None
+    return "unknown", type(exc).__name__
 
 
-SKIPPED_SUMMARY = (
-    "Skipped: Fireflies has no transcript with this ID that this account can access. It may have been deleted, "
-    "access may have been removed, or the link may be wrong. It will not be retried automatically."
-)
+def friendly_failure_reason(exc: BaseException) -> str:
+    """User-facing reason chosen by error type; raw exceptions can carry internal URLs, so they stay in the log."""
+    return reason_text(*failure_kind_for(exc))
+
+
+RETRY_WINDOW = timedelta(days=7)
 
 
 def record_failure(user_id: str, meeting_id: str, project_id: str | None, title: str | None, exc: Exception,
-                   source: str = "link", skipped: bool | None = None) -> None:
+                   source: str = "link") -> None:
     """
-    Leave a visible FAILED meeting (reason in `summary`) so a background failure is not silent.
-    Skipped (retry_until NULL, no automatic retry) when `skipped` is True, or when None and Fireflies has no such
-    transcript. A failed meeting gets retry_until = now() + 7 days only if it had none. updated_at is always set.
+    Leave a visible FAILED meeting (failure_kind plus its reason in `summary`) so a background failure is not silent.
+    Retryable kinds get retry_until = now() + 7 days only if it had none; permanent kinds clear it (no automatic
+    retry). no_transcript also stores the content hash so a sync can tell the content did not change.
     A meeting already PROCESSED is never touched. Never raises: recording must not mask the original error.
     """
-    if skipped is None:
-        skipped = isinstance(exc, FirefliesAPIError) and classify_fireflies_error(exc) == "not_found"
-    reason = SKIPPED_SUMMARY if skipped else friendly_failure_reason(exc)
-    new_retry_until = func.now() + timedelta(days=7)
+    key, detail = failure_kind_for(exc)
+    reason = reason_text(key, detail)
+    retryable = KINDS[key].retryable
+    content_hash = getattr(exc, "content_hash", None) if key == "no_transcript" else None
+    new_retry_until = func.now() + RETRY_WINDOW
     db = SessionLocal()
     try:
         meeting = get_owned_meeting(db, user_id, meeting_id)
@@ -77,13 +93,16 @@ def record_failure(user_id: str, meeting_id: str, project_id: str | None, title:
         if meeting is None:
             db.add(MeetingModel(
                 id=meeting_id, user_id=user_id, project_id=project_id, title=title,
-                summary=reason, status="FAILED", source=source,
-                retry_until=None if skipped else new_retry_until, updated_at=func.now(),
+                summary=reason, status="FAILED", source=source, failure_kind=key, content_hash=content_hash,
+                retry_until=new_retry_until if retryable else None, updated_at=func.now(),
             ))
         else:
             meeting.summary = reason
             meeting.status = "FAILED"
-            if skipped:
+            meeting.failure_kind = key
+            if content_hash:
+                meeting.content_hash = content_hash
+            if not retryable:
                 meeting.retry_until = None
             elif meeting.retry_until is None:
                 meeting.retry_until = new_retry_until

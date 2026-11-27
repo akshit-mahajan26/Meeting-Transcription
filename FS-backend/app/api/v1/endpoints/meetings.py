@@ -1,13 +1,14 @@
 
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.concurrency import run_in_threadpool
-from pydantic import BaseModel
+from pydantic import BaseModel, SecretStr
 from sqlalchemy.orm import Session
 
 from ....api.deps import get_current_user
 from ....core.config import Settings, get_settings
 from ....core.database import UserModel, get_db
 from ....core.ratelimit import limit_by_user
+from ....core.security import verify_password
 from ....schemas.models import (
     MeetingListResponse,
     MeetingResponse,
@@ -122,3 +123,27 @@ async def retry_meeting(
     await run_in_threadpool(service.request_retry, meeting_id, bool(user.fireflies_api_key_encrypted))
     ingest_runner.wake()
     return {"status": "queued"}
+
+
+class DeleteRequest(BaseModel):
+    password: SecretStr
+
+
+@router.post(
+    "/{meeting_id}/delete",
+    status_code=status.HTTP_200_OK,
+    summary="Delete a meeting after confirming the account password",
+)
+async def delete_meeting(
+    meeting_id: str,
+    body: DeleteRequest,
+    service: MeetingService = Depends(get_meeting_service),
+    user: UserModel = Depends(get_current_user),
+) -> dict[str, bool]:
+    # Ownership/exclusion 404 comes first so a wrong password cannot probe other accounts' ids.
+    await run_in_threadpool(service.ensure_deletable_target, meeting_id)
+    # 403, not 401: the frontend logs the user out on any 401.
+    if not await run_in_threadpool(verify_password, body.password.get_secret_value(), user.password_hash):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Incorrect password.")
+    kept = await run_in_threadpool(service.delete_meeting, meeting_id)
+    return {"deleted": True, "kept_marker": kept}

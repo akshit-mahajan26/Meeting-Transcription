@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pandas as pd
 import streamlit as st
-from services.meetings_api import set_meeting_project
+from services.meetings_api import delete_meeting, set_meeting_project
 from ui.components import page_header, turn_card
 from ui.nav import go
 from ui.scope import set_scope
@@ -14,6 +14,40 @@ from utils.formatting import format_meeting_date, format_timestamp, speaker_talk
 PAGE_SIZE = 50
 NO_PROJECT = "No project"
 NEW_PROJECT = "Add new project…"
+DELETE_KEY = "meeting_del_n"  # counter only: bumping it gives the password widget a fresh, empty key
+DELETE_TEXT = (
+    "This permanently deletes the meeting, its transcript and its topics from your library. It cannot be undone. "
+    "A meeting synced from Fireflies is not added again by later syncs; paste its link on the Ingest page to add it back."
+)
+
+
+def delete_error(res: dict) -> str:
+    return "Incorrect password." if res.get("status_code") == 403 else res.get("error") or "Could not delete the meeting."
+
+
+@st.dialog("Delete meeting")
+def _delete_dialog(meeting_id: str) -> None:
+    st.write(DELETE_TEXT)
+    n = st.session_state.setdefault(DELETE_KEY, 0)
+    password = st.text_input("Your platform password", type="password", key=f"meeting_del_pw_{n}")
+    cancel_col, ok_col = st.columns(2)
+    if cancel_col.button("Cancel", key="meeting_del_cancel", width="stretch"):
+        st.session_state.pop(f"meeting_del_pw_{n}", None)
+        st.session_state[DELETE_KEY] = n + 1
+        st.rerun()
+    if ok_col.button("Delete", type="primary", key="meeting_del_ok", width="stretch"):
+        if not password:
+            st.error("Enter your platform password.")
+            return
+        res = delete_meeting(meeting_id, password)
+        st.session_state.pop(f"meeting_del_pw_{n}", None)
+        st.session_state[DELETE_KEY] = n + 1
+        if res.get("success"):
+            refresh_data()
+            st.session_state.pop("meeting_pick", None)
+            st.session_state.meeting_deleted_toast = True
+            st.rerun()
+        st.error(delete_error(res))
 
 
 def filter_by_project(meetings: list[dict], project: str) -> list[dict]:
@@ -58,6 +92,9 @@ def _detail(meeting_id: str) -> None:
     if a.button("Ask about this meeting", icon=":material/chat:", type="primary", width="stretch"):
         set_scope(meeting_id=meeting_id)
         go("assistant")
+
+    if st.button("Delete meeting", icon=":material/delete:", key=f"meeting_del_{meeting_id}"):
+        _delete_dialog(meeting_id)
 
     if meeting.get("purge_at"):
         st.warning(f"Will be deleted on {format_meeting_date(meeting['purge_at'])}.", icon=":material/delete:")
@@ -115,6 +152,8 @@ def _detail(meeting_id: str) -> None:
 
 def render() -> None:
     page_header("Meetings", "Browse ingested meetings and inspect their transcripts.")
+    if st.session_state.pop("meeting_deleted_toast", False):
+        st.toast("Meeting deleted.", icon=":material/check:")
     all_meetings = load_meetings()
     meetings = [m for m in all_meetings if m.get("status") == "PROCESSED"]
     if not meetings:

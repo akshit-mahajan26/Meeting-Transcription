@@ -26,8 +26,8 @@ def fireflies_update_settings(auto_sync: bool | None = None, sync_project: str |
     return backend_call("PATCH", "/fireflies/settings", json=body)
 
 
-def fireflies_sync() -> dict[str, Any]:
-    return backend_call("POST", "/fireflies/sync")
+def fireflies_sync(include_deleted: bool = False) -> dict[str, Any]:
+    return backend_call("POST", "/fireflies/sync", json={"include_deleted": include_deleted})
 
 
 def fireflies_disconnect(password: str) -> dict[str, Any]:

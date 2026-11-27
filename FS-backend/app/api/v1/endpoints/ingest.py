@@ -116,6 +116,9 @@ def _queue_meeting(db: Session, user_id: str, meeting_id: str, project_id: str |
             meeting.ingest_claimed_at = None
             meeting.source = "link"
             meeting.purge_at = None
+            if meeting.excluded_at is not None:  # deliberate re-add of a deleted meeting
+                meeting.excluded_at = None
+                meeting.status = "QUEUED"
             if title:
                 meeting.title = title
             if scoped_project:

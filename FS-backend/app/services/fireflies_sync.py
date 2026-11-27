@@ -13,7 +13,7 @@ from sqlalchemy import text
 from ..core import crypto
 from ..core.config import get_settings
 from ..core.database import MeetingModel, SessionLocal, UserModel
-from . import ownership
+from . import failure_kinds, ownership
 from .fireflies_client import FirefliesAPIError, FirefliesClient, classify_fireflies_error
 from .ingest_runner import ingest_runner
 from .pipeline_orchestrator import BackendPipelineOrchestrator
@@ -62,8 +62,13 @@ def _save_key(user_id: str, token: str) -> None:
         db.commit()
 
 
-def _process_transcript(user_id: str, meeting_id: str, title: str, content_hash: str, project_id: str | None) -> str:
-    """Steps 4.1 to 4.4 and 4.6 for one transcript. Returns disconnected, other_account, new_or_updated or unchanged."""
+def _process_transcript(
+    user_id: str, meeting_id: str, title: str, content_hash: str, project_id: str | None, include_deleted: bool = False
+) -> str:
+    """Steps 4.1 to 4.4 and 4.6 for one transcript.
+
+    Returns disconnected, other_account, restored, new_or_updated or unchanged.
+    """
     with SessionLocal() as db:
         linked = db.query(UserModel.id).filter(
             UserModel.id == user_id, UserModel.fireflies_api_key_encrypted.isnot(None)
@@ -73,6 +78,19 @@ def _process_transcript(user_id: str, meeting_id: str, title: str, content_hash:
         if ownership.meeting_taken(db, user_id, meeting_id):
             return "other_account"
         meeting = db.get(MeetingModel, meeting_id)
+        if meeting is not None and meeting.excluded_at is not None:
+            outcome = "unchanged"  # deleted by the user: no change, but still seen
+            meeting.purge_at = None  # still in Fireflies: keep the marker, or a purge would let a later sync re-add it
+            if include_deleted:  # opt-in manual sync: bring the deleted meeting back (plan section 25)
+                meeting.excluded_at = None
+                meeting.status = "QUEUED"
+                meeting.ingest_requested_at = db.execute(text("SELECT now()")).scalar()
+                meeting.failure_kind = meeting.retry_until = meeting.summary = meeting.content_hash = None
+                meeting.purge_at = None
+                outcome = "restored"
+            db.execute(text("UPDATE users SET fireflies_sync_heartbeat_at = now() WHERE id = :user"), {"user": user_id})
+            db.commit()
+            return outcome
         now = db.execute(text("SELECT now()")).scalar()
         if meeting is not None:
             meeting.purge_at = None
@@ -86,6 +104,11 @@ def _process_transcript(user_id: str, meeting_id: str, title: str, content_hash:
             meeting.status == "PROCESSED" and meeting.content_hash == content_hash
         ):
             outcome = "unchanged"
+        elif (
+            meeting.status == "FAILED" and meeting.content_hash == content_hash
+            and (k := failure_kinds.kind(meeting.failure_kind)) is not None and not k.retryable
+        ):
+            outcome = "unchanged"  # a permanent failure whose content did not change is not queued again
         else:
             meeting.ingest_requested_at = now
             outcome = "new_or_updated"
@@ -128,11 +151,11 @@ def _finish(user_id: str, result: dict[str, Any], cursors: datetime | None, full
 # Public API
 # ------------------------------------------------------------------------------
 
-async def start_sync(user_id: str) -> bool:
+async def start_sync(user_id: str, include_deleted: bool = False) -> bool:
     """Claim the account's sync slot; when claimed, run the sync as a background task. False = not linked or running."""
     if not await asyncio.to_thread(_claim, user_id):
         return False
-    task = asyncio.create_task(run_sync(user_id))
+    task = asyncio.create_task(run_sync(user_id, True) if include_deleted else run_sync(user_id))
     _tasks.add(task)
     task.add_done_callback(_tasks.discard)
     return True
@@ -147,13 +170,13 @@ async def cancel_all_syncs() -> None:
         await asyncio.gather(*tasks, return_exceptions=True)
 
 
-async def run_sync(user_id: str) -> None:
+async def run_sync(user_id: str, include_deleted: bool = False) -> None:
     """Steps 2 to 5, 7 and 8 of the sync algorithm. The caller has already made the claim."""
     settings = get_settings()
     run_started = datetime.now(UTC)
     result: dict[str, Any] = {
         "started_at": run_started.isoformat(), "finished_at": None, "outcome": "stopped_error",
-        "new_or_updated": 0, "unchanged": 0, "skipped_other_account": 0, "skipped_other_account_meetings": [],
+        "new_or_updated": 0, "restored": 0, "unchanged": 0, "skipped_other_account": 0, "skipped_other_account_meetings": [],
         "error": None, "retry_after": None, "full_sync": False, "removed_from_fireflies": 0,
     }
     full_sync = False
@@ -175,7 +198,8 @@ async def run_sync(user_id: str) -> None:
 
         last_full = user["last_full_sync_at"]
         full_sync = (
-            last_full is None
+            include_deleted  # bringing deleted meetings back needs every meeting listed, not only recent ones
+            or last_full is None
             or user["last_synced_at"] is None
             or last_full < run_started - timedelta(days=settings.fireflies_full_sync_days)
         )
@@ -184,7 +208,7 @@ async def run_sync(user_id: str) -> None:
         seen_ids: set[str] = set()
         result["outcome"] = await _page_loop(
             user_id, client, user["project_id"], from_date, run_started, result, settings.fireflies_sync_max_meetings,
-            seen_ids,
+            seen_ids, include_deleted,
         )
         if full_sync and result["outcome"] == "completed":
             result["removed_from_fireflies"] = await asyncio.to_thread(_reconcile, user_id, sorted(seen_ids))
@@ -233,6 +257,7 @@ async def _page_loop(
     result: dict[str, Any],
     cap: int,
     seen_ids: set[str] | None = None,
+    include_deleted: bool = False,
 ) -> str:
     """Step 4: page through the listing and queue transcripts. Returns the outcome."""
     skip = 0
@@ -242,8 +267,9 @@ async def _page_loop(
             if seen_ids is not None:
                 seen_ids.add(item["id"])
             content_hash = BackendPipelineOrchestrator.compute_transcript_hash(item.get("sentences") or [])
+            extra = (True,) if include_deleted else ()
             outcome = await asyncio.to_thread(
-                _process_transcript, user_id, item["id"], item.get("title") or "", content_hash, project_id
+                _process_transcript, user_id, item["id"], item.get("title") or "", content_hash, project_id, *extra
             )
             if outcome == "disconnected":
                 return "stopped_disconnected"
@@ -253,6 +279,8 @@ async def _page_loop(
                     result["skipped_other_account_meetings"].append({"id": item["id"], "title": item.get("title")})
                 continue
             result[outcome] += 1
+            if outcome == "restored":
+                result["new_or_updated"] += 1
             if cap > 0 and result["new_or_updated"] >= cap:
                 ingest_runner.wake()
                 return "stopped_meeting_cap"

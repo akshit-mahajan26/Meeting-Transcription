@@ -118,6 +118,8 @@ class MeetingModel(Base):
     source = Column(String(20), nullable=False, default="link", server_default="link")  # link | fireflies_sync
     purge_at = Column(DateTime(timezone=True), nullable=True)  # permanently deleted at this time (7-day retention)
     retry_until = Column(DateTime(timezone=True), nullable=True)  # FAILED only: auto-retried until then; null = skipped
+    excluded_at = Column(DateTime(timezone=True), nullable=True)  # synced meeting deleted by the user (status EXCLUDED)
+    failure_kind = Column(String(40), nullable=True)  # exact cause of the last failed ingestion (app/services/failure_kinds.py)
     created_at = Column(DateTime(timezone=True), default=utc_now, nullable=False)
     updated_at = Column(DateTime(timezone=True), default=utc_now, onupdate=utc_now, nullable=False)
 

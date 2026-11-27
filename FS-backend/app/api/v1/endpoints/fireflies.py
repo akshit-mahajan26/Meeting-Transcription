@@ -20,6 +20,7 @@ from ....schemas.fireflies import (
     PendingDeletion,
     SettingsRequest,
     StatusResponse,
+    SyncRequest,
 )
 from ....services.fireflies_client import FirefliesAPIError, FirefliesClient, classify_fireflies_error
 from ....services.fireflies_sync import start_sync
@@ -61,6 +62,9 @@ def _status_sync(db: Session, user: UserModel) -> StatusResponse:
         text("SELECT count(*), min(purge_at) FROM meetings WHERE user_id = :u AND purge_at IS NOT NULL"),
         {"u": user.id},
     ).one()
+    deleted = db.execute(
+        text("SELECT count(*) FROM meetings WHERE user_id = :u AND excluded_at IS NOT NULL"), {"u": user.id}
+    ).scalar()
     return StatusResponse(
         linked=bool(user.fireflies_api_key_encrypted),
         account_email=user.fireflies_account_email,
@@ -71,6 +75,7 @@ def _status_sync(db: Session, user: UserModel) -> StatusResponse:
         last_synced_at=user.fireflies_last_synced_at,
         last_sync_result=user.fireflies_last_sync_result,
         pending_deletion=PendingDeletion(meetings=count, purge_at=earliest) if count else None,
+        deleted_meetings=int(deleted or 0),
     )
 
 
@@ -88,6 +93,10 @@ def _store_link(db: Session, user: UserModel, key: str, email: str | None, sync_
     user.fireflies_account_email = email
     user.fireflies_auto_sync = False
     user.fireflies_sync_project_id = _project_id(db, user, sync_project)
+    # The first sync after connecting must be a FULL sync: it clears the deletion dates a disconnect set on meetings
+    # that are still in Fireflies (plan section 12). Resetting the cursors makes run_sync choose a full sync.
+    user.fireflies_last_synced_at = None
+    user.fireflies_last_full_sync_at = None
     db.commit()
 
 
@@ -168,10 +177,13 @@ async def update_settings(
 
 
 @router.post("/sync", status_code=status.HTTP_202_ACCEPTED, summary="Start a Fireflies sync")
-async def sync(user: UserModel = Depends(get_current_user)) -> dict[str, str]:
+async def sync(
+    payload: SyncRequest | None = None, user: UserModel = Depends(get_current_user)
+) -> dict[str, str]:
     _require_configured()
     _require_linked(user)
-    if not await start_sync(user.id):
+    kwargs = {"include_deleted": True} if payload and payload.include_deleted else {}
+    if not await start_sync(user.id, **kwargs):
         raise _error(status.HTTP_409_CONFLICT, "A sync is already running.")
     return {"status": "started"}
 

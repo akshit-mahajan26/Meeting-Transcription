@@ -1,17 +1,20 @@
 import logging
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 from fastapi import HTTPException, status
 from sqlalchemy import and_, func, text
 from sqlalchemy.orm import Session, defer
 
 from ..core.config import Settings, get_settings
-from ..core.database import MeetingModel, SpeakerTurnModel
+from ..core.database import MeetingModel, MeetingTopicModel, SpeakerTurnModel
 from ..schemas.models import (
     MeetingResponse,
     MeetingSummary,
     SpeakerTurnResponse,
 )
+from . import failure_kinds
+from .fireflies_client import ROOT_DIR
 from .ownership import OwnershipError, claim_project, get_owned_meeting, unscope_project_id
 
 logger = logging.getLogger(__name__)
@@ -48,6 +51,19 @@ def ingestion_status(meeting, live_claim: bool, retry_open: bool) -> str:
     return "retrying" if retry_open else "retries_stopped"
 
 
+def failure_view(meeting, retry_open: bool) -> dict:
+    """failure_kind, next_step and status_label for a FAILED meeting (all None otherwise). Rows recorded before
+    failure_kind existed use the retry rule alone."""
+    if meeting.status != "FAILED":
+        return {"failure_kind": None, "next_step": None, "status_label": None}
+    until = meeting.retry_until.astimezone(UTC).strftime("%Y-%m-%d %H:%M UTC") if meeting.retry_until else None
+    key = meeting.failure_kind if failure_kinds.kind(meeting.failure_kind) else None
+    next_step = failure_kinds.next_step(key, retry_open)
+    if next_step is None:
+        next_step = failure_kinds.AUTO_RETRY_STEP if retry_open else failure_kinds.RETRIES_STOPPED_STEP
+    return {"failure_kind": key, "next_step": next_step, "status_label": failure_kinds.status_label(key, retry_open, until)}
+
+
 class MeetingService:
     """Read-side service for one account's meetings, projects and speaker turns (ingestion lives in pipeline_orchestrator)."""
 
@@ -75,7 +91,7 @@ class MeetingService:
                 (MeetingModel.retry_until > func.now()).label("retry_open"),
             )
             .outerjoin(turn_counts, turn_counts.c.meeting_id == MeetingModel.id)
-            .filter(MeetingModel.user_id == self.user_id)
+            .filter(MeetingModel.user_id == self.user_id, MeetingModel.excluded_at.is_(None))
         )
         if meeting_id is not None:
             query = query.filter(MeetingModel.id == meeting_id)
@@ -92,6 +108,7 @@ class MeetingService:
                 source=m.source,
                 purge_at=m.purge_at,
                 retry_until=m.retry_until,
+                **failure_view(m, bool(retry_open)),
                 project_id=unscope_project_id(m.project_id, self.user_id),
                 total_turns=turn_count or 0,
                 created_at=m.created_at,
@@ -115,6 +132,8 @@ class MeetingService:
             meeting = get_owned_meeting(self.db, self.user_id, meeting_id, for_update=True)
         except OwnershipError:
             meeting = None
+        if meeting is not None and meeting.excluded_at is not None:
+            meeting = None
         if meeting is None:
             self.db.rollback()
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Meeting '{meeting_id}' not found.")
@@ -136,6 +155,8 @@ class MeetingService:
         try:
             meeting = get_owned_meeting(self.db, self.user_id, meeting_id, for_update=True)
         except OwnershipError:
+            meeting = None
+        if meeting is not None and meeting.excluded_at is not None:
             meeting = None
         error = None
         if meeting is None:
@@ -160,6 +181,62 @@ class MeetingService:
         meeting.updated_at = func.now()
         self.db.commit()
 
+    def ensure_deletable_target(self, meeting_id: str) -> None:
+        """404 unless the account owns a meeting that is not excluded."""
+        meeting = (
+            self.db.query(MeetingModel)
+            .filter(MeetingModel.id == meeting_id, MeetingModel.user_id == self.user_id)
+            .first()
+        )
+        if meeting is None or meeting.excluded_at is not None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Meeting '{meeting_id}' not found.")
+
+    def delete_meeting(self, meeting_id: str) -> bool:
+        """Deletes a meeting (link) or turns it into an EXCLUDED marker (synced). Returns kept_marker."""
+        try:
+            meeting = get_owned_meeting(self.db, self.user_id, meeting_id, for_update=True)
+        except OwnershipError:
+            meeting = None
+        if meeting is None or meeting.excluded_at is not None:
+            self.db.rollback()
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Meeting '{meeting_id}' not found.")
+        if meeting.ingest_requested_at is not None:
+            self.db.rollback()
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="This meeting is being processed. Try again when it has finished.",
+            )
+        keep = meeting.source == "fireflies_sync"
+        if keep:
+            for model in (MeetingTopicModel, SpeakerTurnModel):
+                self.db.query(model).filter(model.meeting_id == meeting_id, model.user_id == self.user_id).delete(
+                    synchronize_session=False
+                )
+            meeting.status = "EXCLUDED"
+            meeting.excluded_at = func.now()
+            meeting.summary = None
+            meeting.content_hash = None
+            meeting.retry_until = None
+        else:
+            self.db.delete(meeting)
+        self.db.commit()
+        if not keep:
+            self._remove_raw_transcript(meeting_id)
+        logger.info("Deleted meeting %s (kept_marker=%s)", meeting_id, keep)
+        return keep
+
+    def _remove_raw_transcript(self, meeting_id: str) -> None:
+        try:
+            def _safe(value: str) -> str:
+                return "".join(c if c.isalnum() or c in ("-", "_", ".") else "_" for c in str(value))
+
+            base = Path(self.settings.raw_transcripts_dir)
+            if not base.is_absolute():
+                base = ROOT_DIR / base
+            (base / _safe(self.user_id) / f"{_safe(meeting_id)}.json").unlink(missing_ok=True)
+        except Exception:
+            logger.warning("Could not remove raw transcript for meeting %s", meeting_id)
+
     def list_projects(self) -> list[str]:
         """Fetches distinct project identifiers across projects and meetings tables."""
         from ..core.database import ProjectModel
@@ -181,7 +258,11 @@ class MeetingService:
     def get_meeting_by_id(self, meeting_id: str) -> MeetingResponse:
         meeting = (
             self.db.query(MeetingModel)
-            .filter(MeetingModel.id == meeting_id, MeetingModel.user_id == self.user_id)
+            .filter(
+                MeetingModel.id == meeting_id,
+                MeetingModel.user_id == self.user_id,
+                MeetingModel.excluded_at.is_(None),
+            )
             .first()
         )
         if not meeting:
@@ -228,6 +309,9 @@ class MeetingService:
             source=meeting.source,
             purge_at=meeting.purge_at,
             retry_until=meeting.retry_until,
+            failure_kind=summary.failure_kind,
+            next_step=summary.next_step,
+            status_label=summary.status_label,
             project_id=unscope_project_id(meeting.project_id, self.user_id),
             total_turns=len(turn_responses),
             created_at=meeting.created_at,

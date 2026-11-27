@@ -70,6 +70,9 @@ class MeetingResponse(BaseModel):
     source: str = "link"
     purge_at: datetime | None = None
     retry_until: datetime | None = None
+    failure_kind: str | None = None
+    next_step: str | None = None
+    status_label: str | None = None
     project_id: str | None = None
     total_turns: int
     created_at: datetime
@@ -91,6 +94,9 @@ class MeetingSummary(BaseModel):
     source: str = "link"
     purge_at: datetime | None = None
     retry_until: datetime | None = None
+    failure_kind: str | None = None
+    next_step: str | None = None
+    status_label: str | None = None
     project_id: str | None = None
     total_turns: int
     created_at: datetime

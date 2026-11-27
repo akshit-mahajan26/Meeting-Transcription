@@ -49,6 +49,8 @@ The chatbot needs **no changes** to its pipeline (only its meeting filter change
 | D10 | Meetings deleted or edited in Fireflies | A full sync every `FIREFLIES_FULL_SYNC_DAYS` (7) picks up edited transcripts and schedules synced meetings that are no longer in Fireflies for deletion after the same 7-day retention as a disconnect. They are kept if they reappear (section 9, step 6). |
 | D11 | Background processing | An **in-process runner** in the backend (`app/services/ingest_runner.py`, started in the FastAPI lifespan) ingests meetings. Its queue is the existing `meetings` table (`ingest_requested_at`, `ingest_claimed_at`; section 23.1). Redis plus a separate arq worker was rejected on 2026-11-27 because it adds services to run. Costs accepted: raw audio/video uploads are best effort (section 13), rate-limit counters are per process (23.3), and logout signs the user out on every device (23.8). |
 | D12 | Backup architecture | RabbitMQ + Redis with a separate worker is documented as a backup option (section 24), not built. Kept so the platform can switch later through one setting without redesigning the queue. |
+| D13 | Deleting meetings | Users can delete a meeting (password required). A link-added meeting is removed completely; a synced one keeps a hidden `EXCLUDED` marker so syncs do not re-add it; pasting its link adds it back (section 25). |
+| D14 | Failure causes | Each failure records its exact cause; permanent causes (e.g. a meeting without a transcript) are not retried automatically and the Ingest table shows a precise Reason and Next step (section 26). |
 
 ---
 
@@ -305,7 +307,7 @@ Further rules:
 - `record_failure` always sets `updated_at = now()`, even when the reason text is unchanged, so every attempt moves it.
 - `updated_at` also changes on other edits (project change, deletion scheduled or cancelled). For retry spacing this is safe: such an edit can only **delay** the next automatic retry by up to an hour, never cause an extra one.
 - A `PROCESSED` meeting is never turned into `FAILED` (existing rule, kept). A `QUEUED` meeting becomes `FAILED` when its ingestion fails.
-- **Failure handling never deletes a meeting.** Skipped and failed meetings stay listed on the Ingest page with their reason until a retry succeeds. They are removed only by the 7-day purge, which applies to synced meetings only: after a disconnect (section 12), or when a full sync finds them no longer in Fireflies (section 9, step 6). This plan adds no "delete meeting" action.
+- **Failure handling never deletes a meeting.** Skipped and failed meetings stay listed on the Ingest page with their reason until a retry succeeds. They are removed only by the 7-day purge, which applies to synced meetings only: after a disconnect (section 12), or when a full sync finds them no longer in Fireflies (section 9, step 6). Users can also delete a meeting themselves (section 25).
 - "Skipped" can only occur when a transcript is fetched **by ID** (link ingestion, automatic retry, Retry button). The sync's listing only returns transcripts that exist and are visible, so a sync never produces a skipped meeting. (Meetings that disappear from Fireflies are handled by reconciliation, section 9 step 6.)
 
 **Automatic retries** (the scheduled loop requests them, section 11; the runner processes them):
@@ -1132,3 +1134,42 @@ Switch only when at least one of these is true:
 ### 24.7 What does not change
 
 The `meetings` columns and statuses, the claim SQL, failure and retry rules (10.1), every API endpoint and response, the frontend, and sections 9 to 14. The switch is internal to how queued meetings get processed.
+
+---
+
+## 25. Deleting a Meeting (decision D13, 2026-11-28)
+
+Users can delete a meeting themselves. Option A was chosen: a deleted **synced** meeting is remembered so syncs do not add it again.
+
+**Endpoint:** `POST /meetings/{id}/delete` with `{"password": str}` (a request body on `DELETE` is unreliable, so `POST`; the platform password is required because deletion is permanent).
+- 404 when the meeting is not the user's or is already deleted; 403 "Incorrect password." (not 401, see section 8); 409 "This meeting is being processed. Try again when it has finished." when `ingest_requested_at` is set (no race with the ingest runner).
+- One transaction, row locked:
+  - `source = 'link'`: the meeting row is deleted; topics and turns go through `ON DELETE CASCADE`; its raw transcript file (section 23.7) is deleted after the commit if one exists. The meeting ID becomes free again (relevant to Q3).
+  - `source = 'fireflies_sync'`: topics and turns are deleted; the row stays as a **hidden marker**: `status = 'EXCLUDED'`, `excluded_at = now()`, `summary`, `content_hash` and `retry_until` cleared; `id`, `user_id`, `source`, `title`, `project_id` and `purge_at` kept.
+- Response 200 `{"deleted": true, "kept_marker": bool}`.
+
+**Column:** `meetings.excluded_at` (`timestamptz`, null), migration `a8c5e2d91f36`. No new table.
+
+**Where markers are hidden:** every meetings endpoint (list, detail, turns, `PATCH`, retry) treats an excluded row as not found. The chatbot and pages accept only `status = 'PROCESSED'`, so they never see it.
+
+**Syncs:** an excluded meeting is skipped (counted as unchanged) but still counts as seen for reconciliation (section 9, step 6), so a marker whose meeting disappears from Fireflies is purged after 7 days like any synced meeting.
+
+**Adding it back:** pasting the meeting's link on the Ingest page clears `excluded_at` and queues it (`status = 'QUEUED'`, `source = 'link'`, `purge_at = null`).
+
+**Disconnect:** markers are synced rows, so a disconnect schedules them for deletion with the rest (section 12). After they are purged, a later reconnect's full sync can add those meetings again; deleting them again re-creates the markers.
+
+**Bringing deleted meetings back:** a manual sync (`POST /fireflies/sync`, optional body `{"include_deleted": bool}`, default false; auto-sync always false) with `include_deleted` restores each listed meeting that has `excluded_at` set: `excluded_at = NULL`, `status = 'QUEUED'`, `ingest_requested_at = now()`, `failure_kind`, `retry_until`, `summary` and `content_hash` cleared; source and project stay. It counts as `restored` (new key in the sync result) and in `new_or_updated`. The status object has `deleted_meetings` (count of the user's meetings with `excluded_at` set); the Ingest page shows the toggle "Bring back deleted meetings (N)" next to the Auto-sync toggle, only when N > 0. It is off by default, applies to the next Sync now only (auto-sync never brings deleted meetings back) and turns itself off after that sync. A sync with `include_deleted` is always a **full** sync: deleted meetings are usually older than an incremental sync's window, so an incremental listing would never return them. A full sync that finds a deleted meeting's marker also clears its `purge_at`, so the marker is kept and a purge cannot let a later sync re-add it. Connecting resets the sync cursors, so the first sync after connecting is full (section 12).
+
+**UI:** Meetings page meeting detail has **Delete meeting** (confirmation dialog with the platform password). The Ingest page's Ingestion status table has **Delete selected** for any rows (one password for the batch, then a summary).
+
+---
+
+## 26. Precise Failure Causes (decision D14, 2026-11-28)
+
+Every failed ingestion records its exact cause in `meetings.failure_kind` (`String(40)`, migration `b3d7f1a26e58`; no new table). The wording, and whether a cause is retried automatically, live in one module: `FS-backend/app/services/failure_kinds.py`.
+
+- **Reason** (`summary`): what went wrong, one short sentence. **Next step**: what the user should do. **Status**: the label shown in the Ingest table.
+- **16 causes, 9 permanent.** Permanent causes (no transcript, not found, no access, key rejected, not connected, key unreadable, Fireflies account problem, invalid request, engine rejected the content) get `retry_until = NULL` and are never retried automatically; the user deletes the meeting or fixes the cause and presses Retry. Temporary causes (rate limit, Fireflies or engine unreachable, time limit, embeddings failed, database error, unexpected error) keep the 7-day hourly retry window; when it closes, Next step becomes "Press Retry, or delete it."
+- **No transcript:** the orchestrator checks the transcript before calling the AI engine; a meeting with no sentence containing text is recorded as `no_transcript` immediately, with no engine or Gemini call, and its content hash is stored so a sync re-queues it only if its content in Fireflies changes.
+- **API:** meetings expose `failure_kind`, `status_label` and `next_step`. **Ingest table:** Status = `status_label`, Reason = `summary`, a new **Next step** column; tiles Processed, Queued, Processing, Retrying, **Needs attention**.
+- Failures recorded before this change have no `failure_kind`; they show their old reason until they are retried.

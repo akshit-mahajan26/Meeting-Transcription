@@ -43,6 +43,8 @@ def status_lines(status: dict[str, Any]) -> list[str]:
         f"{result.get('new_or_updated', 0)} queued for ingestion, {result.get('unchanged', 0)} unchanged, "
         f"{result.get('skipped_other_account', 0)} skipped because another account owns the meeting"
     )
+    if int(result.get("restored") or 0) > 0:
+        counts += f", {result['restored']} brought back"
     if outcome == "completed":
         lines.append(f"Last synced {when}: {counts}.")
     elif outcome == "stopped_meeting_cap":
@@ -67,6 +69,7 @@ def _reset_secret_fields() -> None:
     n = _form_n()
     for name in ("ff_api_key", "ff_password", "ff_dlg_password"):
         st.session_state.pop(f"{name}_{n}", None)
+    st.session_state.pop(f"ff_restore_{n}", None)
     st.session_state[FORM_KEY] = n + 1
 
 
@@ -158,16 +161,28 @@ def _render_linked(status: dict[str, Any], projects: list[str]) -> None:
                 _error(res)
     st.caption(SYNC_CAPTION)
 
-    auto = st.toggle("Auto-sync", value=bool(status.get("auto_sync")), key="ff_auto_sync")
+    deleted = int(status.get("deleted_meetings") or 0)
+    auto_col, restore_col = st.columns(2)
+    with auto_col:
+        auto = st.toggle("Auto-sync", value=bool(status.get("auto_sync")), key="ff_auto_sync")
     if auto != bool(status.get("auto_sync")):
         res = fireflies_api.fireflies_update_settings(auto_sync=auto)
         if res.get("success"):
             st.rerun()
         _error(res)
 
+    restore = False
+    if deleted > 0:  # only offered when there is something to bring back
+        with restore_col:
+            restore = st.toggle(
+                f"Bring back deleted meetings ({deleted})", key=f"ff_restore_{_form_n()}",
+                help="Applies to the next Sync now only (auto-sync never brings them back). Deleted meetings that are "
+                "still in your Fireflies account are added to your library again. Turns itself off after the sync.",
+            )
     if st.button("Sync now", disabled=running, icon=":material/sync:"):
-        res = fireflies_api.fireflies_sync()
+        res = fireflies_api.fireflies_sync(include_deleted=restore)
         if res.get("success"):
+            _reset_secret_fields()  # bumps the counter: the restore toggle comes back off
             st.rerun()
         else:
             _error(res)

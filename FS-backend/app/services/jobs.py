@@ -31,9 +31,9 @@ async def run_fireflies_ingest(
         try:
             api_key = await asyncio.to_thread(_owner_key, user_id)
         except SecretDecryptionError as exc:
-            raise FirefliesDisconnected("The stored Fireflies key can no longer be read. Reconnect Fireflies.") from exc
+            raise FirefliesDisconnected("The stored Fireflies key can no longer be read. Reconnect Fireflies.", kind="key_unreadable") from exc
         if api_key is None and source == "fireflies_sync":
-            raise FirefliesDisconnected("Fireflies is disconnected. Reconnect to retry this meeting.")
+            raise FirefliesDisconnected("Fireflies is disconnected. Reconnect to retry this meeting.", kind="disconnected")
         client = FirefliesClient(api_key=api_key) if api_key else get_fireflies_client()
         is_link = source != "fireflies_sync"
         try:
@@ -48,10 +48,10 @@ async def run_fireflies_ingest(
             try:
                 await client.get_current_user()
             except Exception:
-                raise fetch_exc from None
-            # The key works, so this account simply cannot see the transcript: skipped, not failed.
+                raise  # the key check itself failed (e.g. key_rejected): that is the real cause
+            # The key works, so this account simply cannot see the transcript: recorded as a permanent no_access.
             logger.error(f"[Ingest Job] Transcript '{transcript_id}' is not accessible to this account: {fetch_exc}")
-            await asyncio.to_thread(record_failure, user_id, transcript_id, project_id, title, fetch_exc, source, True)
+            await asyncio.to_thread(record_failure, user_id, transcript_id, project_id, title, fetch_exc, source)
             return
         logger.info(f"[Ingest Job] Fetched transcript for '{transcript_id}'. Running AI Engine pipeline...")
         result = await get_backend_pipeline_orchestrator().orchestrate_meeting_ingestion(

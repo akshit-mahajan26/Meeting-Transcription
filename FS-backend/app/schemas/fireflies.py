@@ -23,6 +23,10 @@ class SettingsRequest(BaseModel):
     sync_project: str | None = None
 
 
+class SyncRequest(BaseModel):
+    include_deleted: bool = False
+
+
 class PendingDeletion(BaseModel):
     meetings: int
     purge_at: datetime | None
@@ -38,6 +42,7 @@ class StatusResponse(BaseModel):
     last_synced_at: datetime | None
     last_sync_result: dict[str, Any] | None
     pending_deletion: PendingDeletion | None
+    deleted_meetings: int = 0
 
 
 class DisconnectResponse(BaseModel):

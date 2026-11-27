@@ -14,7 +14,7 @@ from ..core.database import (
     SessionLocal,
     SpeakerTurnModel,
 )
-from .ingestion_failures import PipelineOrchestratorError
+from .ingestion_failures import EmptyTranscript, PipelineOrchestratorError
 from .orchestrator_persistence import check_idempotency
 from .ownership import claim_project, get_owned_meeting
 
@@ -90,7 +90,7 @@ class BackendPipelineOrchestrator:
 
                 if resp.status_code not in [200, 201]:
                     raise PipelineOrchestratorError(
-                        f"FS-AI-Engine rejected payload (HTTP {resp.status_code}): {resp.text}"
+                        f"FS-AI-Engine rejected payload (HTTP {resp.status_code}): {resp.text}", kind="engine_rejected"
                     )
 
                 return resp.json()
@@ -99,7 +99,8 @@ class BackendPipelineOrchestrator:
                 err_detail = f"Timeout ({timeout_sec}s exceeded)" if isinstance(exc, httpx.TimeoutException) else str(exc)
                 if attempt >= max_retries:
                     raise PipelineOrchestratorError(
-                        f"Failed to communicate with FS-AI-Engine after {max_retries} attempts: {err_detail}"
+                        f"Failed to communicate with FS-AI-Engine after {max_retries} attempts: {err_detail}",
+                        kind="timeout" if isinstance(exc, httpx.TimeoutException) else "engine_unavailable",
                     ) from exc
                 logger.warning(
                     f"Network error contacting FS-AI-Engine (attempt {attempt}/{max_retries}): {err_detail}. Retrying in {backoff}s..."
@@ -107,7 +108,7 @@ class BackendPipelineOrchestrator:
                 await asyncio.sleep(backoff)
                 backoff *= 2.0
 
-        raise PipelineOrchestratorError("Exceeded max retries contacting FS-AI-Engine.")
+        raise PipelineOrchestratorError("Exceeded max retries contacting FS-AI-Engine.", kind="engine_unavailable")
 
     async def orchestrate_meeting_ingestion(
         self,
@@ -134,6 +135,10 @@ class BackendPipelineOrchestrator:
         hit = await asyncio.to_thread(check_idempotency, user_id, meeting_id, content_hash, source)
         if hit is not None:
             return hit
+
+        # 2b. A transcript with no text is never sent to the engine
+        if not any(str(s.get("text") or "").strip() for s in sentences):
+            raise EmptyTranscript(f"Transcript '{meeting_id}' has no sentence with text.", content_hash=content_hash)
 
         # 3. Dispatch to FS-AI-Engine via HTTP
         # Normalize sentence structures so speaker_id is always str for FS-AI-Engine schemas
@@ -202,11 +207,11 @@ class BackendPipelineOrchestrator:
                     if len(vec) == 1536:
                         level1_turns[m_idx]["embedding"] = vec
             except Exception as emb_err:
-                raise PipelineOrchestratorError(f"Could not generate embeddings for meeting '{meeting_id}': {emb_err}") from emb_err
+                raise PipelineOrchestratorError(f"Could not generate embeddings for meeting '{meeting_id}': {emb_err}", kind="embedding_failed") from emb_err
             still_missing = sum(1 for t in level1_turns if not (t.get("embedding") and len(t["embedding"]) == 1536))
             if still_missing:
                 raise PipelineOrchestratorError(
-                    f"{still_missing} of {len(level1_turns)} turns of meeting '{meeting_id}' have no embedding; not saving a half-searchable meeting."
+                    f"{still_missing} of {len(level1_turns)} turns of meeting '{meeting_id}' have no embedding; not saving a half-searchable meeting.", kind="embedding_failed"
                 )
 
         # 4. Atomic 4-Tier Database Upsert
@@ -255,6 +260,7 @@ class BackendPipelineOrchestrator:
                     db.flush()
 
                 meeting.retry_until = None
+                meeting.failure_kind = None
 
                 # Tier 3: Meeting Topics
                 topic_id_map: dict[int, str] = {}
@@ -352,7 +358,7 @@ class BackendPipelineOrchestrator:
             except Exception as exc:
                 db.rollback()
                 logger.error(f"Database persistence failure for meeting '{meeting_id}': {exc}", exc_info=True)
-                raise PipelineOrchestratorError(f"Database error saving meeting '{meeting_id}': {exc!s}") from exc
+                raise PipelineOrchestratorError(f"Database error saving meeting '{meeting_id}': {exc!s}", kind="database_error") from exc
             finally:
                 db.close()
 
