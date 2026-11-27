@@ -4,13 +4,42 @@ from __future__ import annotations
 
 import pandas as pd
 import streamlit as st
+from services.meetings_api import set_meeting_project
 from ui.components import page_header, turn_card
 from ui.nav import go
 from ui.scope import set_scope
-from ui.state import load_meeting, load_meetings
+from ui.state import known_projects, load_meeting, load_meetings, refresh_data
 from utils.formatting import format_meeting_date, format_timestamp, speaker_talk_time, transcript_to_markdown
 
 PAGE_SIZE = 50
+NO_PROJECT = "No project"
+NEW_PROJECT = "Add new project…"
+
+
+def filter_by_project(meetings: list[dict], project: str) -> list[dict]:
+    if project == "All projects":
+        return meetings
+    if project == NO_PROJECT:
+        return [m for m in meetings if not m.get("project_id")]
+    return [m for m in meetings if m.get("project_id") == project]
+
+
+def _project_editor(meeting_id: str, current: str | None, all_meetings: list[dict]) -> None:
+    options = [*known_projects(all_meetings), NO_PROJECT, NEW_PROJECT]
+    c1, c2, c3 = st.columns([2, 2, 1], vertical_alignment="bottom")
+    choice = c1.selectbox("Move to project", options, index=options.index(current or NO_PROJECT) if (current or NO_PROJECT) in options else None,
+                          key=f"proj_sel_{meeting_id}")
+    new = c2.text_input("New project name", key=f"proj_new_{meeting_id}").strip() if choice == NEW_PROJECT else ""
+    if c3.button("Save", icon=":material/save:", key=f"proj_save_{meeting_id}", width="stretch"):
+        name = new if choice == NEW_PROJECT else None if choice == NO_PROJECT else choice
+        if choice == NEW_PROJECT and not name:
+            st.warning("Enter a project name.", icon=":material/warning:")
+            return
+        res = set_meeting_project(meeting_id, name)
+        if res.get("success"):
+            refresh_data()
+            st.rerun()
+        st.error(res.get("error") or "Could not save the project.", icon=":material/error:")
 
 
 def _detail(meeting_id: str) -> None:
@@ -29,6 +58,10 @@ def _detail(meeting_id: str) -> None:
     if a.button("Ask about this meeting", icon=":material/chat:", type="primary", width="stretch"):
         set_scope(meeting_id=meeting_id)
         go("assistant")
+
+    if meeting.get("purge_at"):
+        st.warning(f"Will be deleted on {format_meeting_date(meeting['purge_at'])}.", icon=":material/delete:")
+    _project_editor(meeting_id, meeting.get("project_id"), load_meetings())
 
     c0, c1, c2, c3 = st.columns(4)
     day, _, clock = format_meeting_date(meeting.get("date")).partition(", ")
@@ -84,14 +117,6 @@ def render() -> None:
     page_header("Meetings", "Browse ingested meetings and inspect their transcripts.")
     all_meetings = load_meetings()
     meetings = [m for m in all_meetings if m.get("status") == "PROCESSED"]
-    failed = [m for m in all_meetings if m.get("status") == "FAILED"]
-    if failed:
-        with st.container(border=True):
-            st.error(f"{len(failed)} ingestion{'s' if len(failed) != 1 else ''} failed. Submit the link again on the Ingest page to retry.",
-                     icon=":material/error:")
-            for m in failed:
-                st.markdown(f"**{m.get('title') or m['id']}** · {m.get('project_id') or '—'}")
-                st.caption(m.get("summary") or "No error details were recorded.")
     if not meetings:
         st.info("No meetings found. Ingest a meeting link to get started.", icon=":material/inbox:")
         return
@@ -106,8 +131,8 @@ def render() -> None:
         st.session_state.meeting_project = "All projects"
 
     pick_col, proj_col = st.columns([4, 1.4], vertical_alignment="bottom")
-    project = proj_col.selectbox("Project", ["All projects", *projects], key="meeting_project")
-    options = [m["id"] for m in meetings if project == "All projects" or m.get("project_id") == project]
+    project = proj_col.selectbox("Project", ["All projects", NO_PROJECT, *projects], key="meeting_project")
+    options = [m["id"] for m in filter_by_project(meetings, project)]
     if st.session_state.get("meeting_pick") not in options:
         st.session_state.pop("meeting_pick", None)
 

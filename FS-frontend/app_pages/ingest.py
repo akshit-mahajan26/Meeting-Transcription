@@ -5,6 +5,7 @@ from __future__ import annotations
 import streamlit as st
 from services.api_client import api_client
 from ui.components import page_header
+from ui.fireflies_panel import render_fireflies_panel
 from ui.state import known_projects, load_meetings, refresh_data, register_project
 
 ADD_NEW = "➕ Add new project…"
@@ -19,7 +20,8 @@ STEPS = [
 
 def render() -> None:
     projects = known_projects(load_meetings())
-    page_header("Ingest a meeting", "Submit a recording or Fireflies link for background transcription.")
+    page_header("Ingest a meeting", "Connect Fireflies, add meetings by link, and track every ingestion.")
+    sync_running = render_fireflies_panel()
     form_col, help_col = st.columns([3, 2], gap="large")
 
     with form_col:
@@ -70,7 +72,7 @@ def render() -> None:
                             icon=":material/info:")
                 elif res.get("success"):
                     st.toast(f"Queued for project {project_id}", icon=":material/check_circle:")
-                    st.caption("Processing is asynchronous. Check the **Meetings** page in a moment to see new meetings; a failed ingestion is listed there with its error.")
+                    st.caption("Processing runs in the background. The meeting appears in **Ingestion status** below when it has finished or failed.")
 
     with help_col:
         with st.container(border=True):
@@ -87,3 +89,9 @@ def render() -> None:
                 "- `https://app.fireflies.ai/view/01KT43KCH4XRVKJT1E65YNT051`\n"
                 "- Direct `.mp3`, `.mp4`, `.wav`, `.m4a` URLs (S3, GCS, public)"
             )
+
+    try:
+        from ui.ingestion_status import render_ingestion_status
+    except ImportError:
+        return
+    render_ingestion_status(sync_running=sync_running)

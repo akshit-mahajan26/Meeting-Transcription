@@ -425,7 +425,7 @@ The Meetings page is for **processed meetings only**: browse them, read their tr
 - **Removed:** the red "N ingestions failed. Submit the link again on the Ingest page to retry." box and its list of failures. That information is on the Ingest page (section 14.4).
 - Project filter gains a **"No project"** option so synced meetings are easy to find and sort.
 - Meeting detail gains a **project selector** (existing projects, "No project", "Add new project…") that calls `PATCH /meetings/{id}`.
-- Meetings with `purge_at` show "Will be deleted on {date}", followed by the reason: "Fireflies disconnected" when no Fireflies account is linked, otherwise "No longer in your Fireflies account" (section 9, step 6). This stays on the Meetings page because it warns about losing a meeting the user is looking at.
+- Meetings with `purge_at` show "Will be deleted on {date}." (implemented in stage 4 without the reason text: the meeting list does not carry enough data to tell a disconnect from a Fireflies deletion reliably; the Fireflies panel on the Ingest page shows which applies). The project selector in the meeting detail is labelled "Move to project".
 - The source of a meeting (link or Fireflies) is not shown here; it is a column of the Ingest page table.
 
 ### 14.4 Ingest page, Section 3: Ingestion status
