@@ -137,7 +137,8 @@ class MeetingIntelligenceClient:
             return {"success": False, "error": f"Cannot reach the backend: {e}"}
         if res.status_code in (200, 201):
             body = res.json()
-            return {"success": True, "token": body["access_token"], "user": body["user"]}
+            return {"success": True, "token": body["access_token"], "user": body["user"],
+                    "expires_at": body.get("expires_at"), "refresh_after": body.get("refresh_after")}
         return {"success": False, "error": _error_detail(res)}
 
     def login(self, email: str, password: str) -> dict[str, Any]:

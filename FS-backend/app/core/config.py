@@ -64,6 +64,11 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices("ACCESS_TOKEN_EXPIRE_MINUTES", "access_token_expire_minutes"),
     )
 
+    session_idle_timeout_minutes: int = Field(
+        default=0,
+        validation_alias=AliasChoices("SESSION_IDLE_TIMEOUT_MINUTES", "session_idle_timeout_minutes"),
+    )
+
     # Shared secret sent to FS-AI-Engine so only this backend can call it
     engine_api_key: str = Field(
         validation_alias=AliasChoices("ENGINE_API_KEY", "engine_api_key"),
@@ -144,6 +149,17 @@ class Settings(BaseSettings):
             short = [n for n, v in (("JWT_SECRET", self.jwt_secret), ("ENGINE_API_KEY", self.engine_api_key)) if len(v) < 32]
             if short:
                 raise ValueError(f"{', '.join(short)} must be at least 32 characters when BACKEND_ENV=production")
+        return self
+
+    @model_validator(mode="after")
+    def check_session_idle_timeout(self) -> "Settings":
+        """Idle limit: 0 (off) or 5..ACCESS_TOKEN_EXPIRE_MINUTES (plan 22.3)."""
+        idle = self.session_idle_timeout_minutes
+        if idle != 0 and not 5 <= idle <= self.access_token_expire_minutes:
+            raise ValueError(
+                "SESSION_IDLE_TIMEOUT_MINUTES must be 0 (off) or between 5 and ACCESS_TOKEN_EXPIRE_MINUTES "
+                f"({self.access_token_expire_minutes}), got {idle}"
+            )
         return self
 
     @property

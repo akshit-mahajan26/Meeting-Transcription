@@ -5,9 +5,14 @@ from __future__ import annotations
 from typing import Any
 
 import streamlit as st
+from services import session_api
 from services.api_client import SESSION_EXPIRED_KEY, TOKEN_KEY, api_client
+from ui import session_cookie
 
 USER_KEY = "auth_user"
+EXPIRES_AT_KEY = "expires_at"
+REFRESH_AFTER_KEY = "refresh_after"
+LOGGED_OUT_KEY = "logged_out"
 MIN_PASSWORD_LENGTH = 6
 
 
@@ -25,15 +30,22 @@ def current_user_id() -> str:
 
 
 def _start_session(result: dict[str, Any]) -> None:
-    st.session_state.clear()  # nothing from a previous visitor survives into this login
+    st.session_state.clear()  # nothing from a previous visitor survives into this login (also clears logged_out)
     st.session_state[TOKEN_KEY] = result["token"]
     st.session_state[USER_KEY] = result["user"]
+    if "expires_at" not in result:  # the client's login result carries only token and user
+        info = session_api.get_session(result["token"])
+        result = {**result, **(info.get("data") or {})} if info["success"] else result
+    st.session_state[EXPIRES_AT_KEY] = result.get("expires_at")
+    st.session_state[REFRESH_AFTER_KEY] = result.get("refresh_after")
     st.rerun()
 
 
 def logout() -> None:
     api_client.logout()  # revoke the token server-side; failures are ignored
     st.session_state.clear()
+    session_cookie.delete()
+    st.session_state[LOGGED_OUT_KEY] = True  # st.context.cookies still holds the old cookie in this session
     st.rerun()
 
 

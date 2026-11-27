@@ -1,7 +1,7 @@
 """Password hashing and JWT access tokens."""
 
 import uuid
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 
 import bcrypt
 import jwt
@@ -23,12 +23,31 @@ def verify_password(password: str, password_hash: str) -> bool:
         return False
 
 
-def create_access_token(user_id: str) -> str:
+REFRESH_AFTER_SECONDS = 60
+
+
+def issue_access_token(user_id: str, auth_time: int | None = None) -> tuple[str, datetime, datetime | None]:
+    """Signs a token; returns (token, expires_at, refresh_after).
+
+    auth_time is the login time in epoch seconds (now for a fresh login, kept on refresh).
+    exp = auth_time + max, or with the idle limit on min(iat + idle, auth_time + max).
+    refresh_after is iat + 60 s when the idle limit is on, else None.
+    """
     settings = get_settings()
-    now = datetime.now(UTC)
-    expires = now + timedelta(minutes=settings.access_token_expire_minutes)
-    claims = {"sub": user_id, "exp": expires, "iat": int(now.timestamp()), "jti": uuid.uuid4().hex}
-    return jwt.encode(claims, settings.jwt_secret, algorithm=settings.jwt_algorithm)
+    iat = int(datetime.now(UTC).timestamp())
+    auth_time = iat if auth_time is None else int(auth_time)
+    exp = auth_time + settings.access_token_expire_minutes * 60
+    idle = settings.session_idle_timeout_minutes
+    if idle > 0:
+        exp = min(iat + idle * 60, exp)
+    claims = {"sub": user_id, "auth_time": auth_time, "exp": exp, "iat": iat, "jti": uuid.uuid4().hex}
+    token = jwt.encode(claims, settings.jwt_secret, algorithm=settings.jwt_algorithm)
+    refresh_after = datetime.fromtimestamp(iat + REFRESH_AFTER_SECONDS, UTC) if idle > 0 else None
+    return token, datetime.fromtimestamp(exp, UTC), refresh_after
+
+
+def create_access_token(user_id: str, auth_time: int | None = None) -> str:
+    return issue_access_token(user_id, auth_time)[0]
 
 
 def decode_access_token_claims(token: str) -> dict | None:

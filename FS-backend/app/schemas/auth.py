@@ -1,4 +1,5 @@
 import re
+from datetime import datetime
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -32,3 +33,11 @@ class TokenResponse(BaseModel):
     access_token: str
     token_type: str = "bearer"
     user: UserResponse
+    expires_at: datetime
+    refresh_after: datetime | None = None
+
+
+class SessionResponse(BaseModel):
+    user: UserResponse
+    expires_at: datetime
+    refresh_after: datetime | None = None

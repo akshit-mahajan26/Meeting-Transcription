@@ -5,7 +5,7 @@ from fastapi.concurrency import run_in_threadpool
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from ....api.deps import get_current_user
+from ....api.deps import get_current_claims, get_current_user
 from ....core.config import get_settings
 from ....core.database import UserModel, get_db
 from ....core.ratelimit import (
@@ -15,8 +15,8 @@ from ....core.ratelimit import (
     login_throttled_error,
     record_login_failure,
 )
-from ....core.security import create_access_token, hash_password, verify_password
-from ....schemas.auth import Credentials, TokenResponse, UserResponse
+from ....core.security import REFRESH_AFTER_SECONDS, hash_password, issue_access_token, verify_password
+from ....schemas.auth import Credentials, SessionResponse, TokenResponse, UserResponse
 
 router = APIRouter()
 
@@ -24,8 +24,11 @@ router = APIRouter()
 _DUMMY_HASH = hash_password("not-a-real-password")
 
 
-def _token_for(user: UserModel) -> TokenResponse:
-    return TokenResponse(access_token=create_access_token(user.id), user=UserResponse.model_validate(user))
+def _token_for(user: UserModel, auth_time: int | None = None) -> TokenResponse:
+    token, expires_at, refresh_after = issue_access_token(user.id, auth_time)
+    return TokenResponse(
+        access_token=token, user=UserResponse.model_validate(user), expires_at=expires_at, refresh_after=refresh_after
+    )
 
 
 @router.post(
@@ -107,3 +110,35 @@ async def logout_all(user: UserModel = Depends(get_current_user), db: Session = 
 @router.get("/me", response_model=UserResponse, summary="The authenticated user")
 def me(user: UserModel = Depends(get_current_user)) -> UserResponse:
     return UserResponse.model_validate(user)
+
+
+def _claims_times(claims: dict) -> tuple[datetime, datetime | None]:
+    expires_at = datetime.fromtimestamp(claims["exp"], UTC)
+    idle_on = get_settings().session_idle_timeout_minutes > 0
+    iat = claims.get("iat")
+    refresh_after = datetime.fromtimestamp(iat + REFRESH_AFTER_SECONDS, UTC) if idle_on and isinstance(iat, int) else None
+    return expires_at, refresh_after
+
+
+@router.get("/session", response_model=SessionResponse, summary="Restore a session from a token")
+def session(user: UserModel = Depends(get_current_user), claims: dict = Depends(get_current_claims)) -> SessionResponse:
+    expires_at, refresh_after = _claims_times(claims)
+    return SessionResponse(
+        user=UserResponse.model_validate(user), expires_at=expires_at, refresh_after=refresh_after
+    )
+
+
+@router.post("/refresh", response_model=TokenResponse, summary="Exchange a token for a fresh one (same login time)")
+def refresh(user: UserModel = Depends(get_current_user), claims: dict = Depends(get_current_claims)) -> TokenResponse:
+    if get_settings().session_idle_timeout_minutes <= 0:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Session refresh is not enabled.")
+    auth_time = claims.get("auth_time")
+    max_seconds = get_settings().access_token_expire_minutes * 60
+    now = datetime.now(UTC).timestamp()
+    if not isinstance(auth_time, int) or isinstance(auth_time, bool) or auth_time + max_seconds <= now:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Not authenticated. Please log in again.",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    return _token_for(user, auth_time)

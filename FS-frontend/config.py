@@ -58,6 +58,10 @@ class FrontendConfig(BaseSettings):
         default=4000,
         description="Longest single message sent as chat history; must not exceed the backend's HISTORY_MESSAGE_MAX_CHARS"
     )
+    SESSION_COOKIE_PERSISTENT: bool = Field(
+        default=False,
+        description="True: the login cookie outlives the browser session (until the token expires). False: browser-session cookie."
+    )
 
     model_config = SettingsConfigDict(
         env_file=[".env", "FS-frontend/.env", "frontend/.env"],

@@ -14,7 +14,12 @@ The work is built in parts; section 18 lists the stages. Last updated 2026-11-27
 |------|-------|--------|
 | Part 1 | Done | 23.2 Fireflies error classification, 23.4 request and LLM limits, 23.6 database (pools, grouped turn counts), 23.7 raw transcript files, engine CORS (23.9), 23.10 logging |
 | Part 2 | Done | 23.5 index-backed vector retrieval, 5.4 timestamp conversion |
-| Part 3 | Done (uncommitted) | 23.1 in-process ingest runner with its queue in the `meetings` table, 23.3 rate limits, 23.8 logout, 23.9 compose file, and the per-meeting lock (the claim, section 23.1) |
+| Part 3 | Done | 23.1 in-process ingest runner with its queue in the `meetings` table, 23.3 rate limits, 23.8 logout, 23.9 compose file, and the per-meeting lock (the claim, section 23.1) |
+| Stage 1 | Done | Fireflies linking backend: migration `f2b8d6a40c71`, `crypto.py`, client `get_current_user`/`list_transcripts`, `fireflies_sync.py`, `/fireflies/*` endpoints, runner key choice and 1,200 s timeout |
+| Stage 2 | Done | Skipped/failed rules with `retry_until`, `scheduler.py` (leader election, auto-sync, retries, re-encryption, purge), reconciliation |
+| Stage 3 | Done | `PATCH /meetings/{id}` (meeting and turn metadata in one transaction), `POST /meetings/{id}/retry`, full `ingestion_status` |
+| Stage 4 | Done | Ingest page (Fireflies panel, disconnect dialog, Ingestion status with retry), Meetings page (Move to project, deletion label) |
+| Stage 5 | Done | Login survives refresh: `mi_session` cookie via CCv2, `GET /auth/session`, `POST /auth/refresh`, `SESSION_IDLE_TIMEOUT_MINUTES`, `SESSION_COOKIE_PERSISTENT`; verified in a headless browser |
 
 Part 3 is the **no-Redis version** (decision D11): an earlier draft used Redis and separate arq worker processes, and both are removed. Migrations `c4e8a1f20b93` (timestamps, section 5.4) and `d7a9c3e15b42` (queue and logout columns, section 5) are applied to the local staging database `meeting_intel_staging` (port 5434). The Fireflies stages (1 to 4) and stage 5 are not started.
 

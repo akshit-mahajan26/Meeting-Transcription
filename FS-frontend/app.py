@@ -23,8 +23,20 @@ import streamlit as st
 
 st.set_page_config(page_title="Meeting Intelligence", page_icon="🎙️", layout="wide", initial_sidebar_state="expanded")
 
+from datetime import UTC, datetime
+
 from app_pages import assistant, ingest, meetings, overview
-from ui.auth import is_logged_in, render_auth_page
+from services import session_api
+from services.api_client import SESSION_EXPIRED_KEY, TOKEN_KEY
+from ui import session_cookie
+from ui.auth import (
+    EXPIRES_AT_KEY,
+    LOGGED_OUT_KEY,
+    REFRESH_AFTER_KEY,
+    USER_KEY,
+    is_logged_in,
+    render_auth_page,
+)
 from ui.nav import register
 from ui.shell import render_shell
 from ui.state import init_state
@@ -32,8 +44,66 @@ from ui.styles import inject_styles
 
 inject_styles()
 
+
+
+def _passed(iso: str | None) -> bool:
+    try:
+        when = datetime.fromisoformat(str(iso).replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    return when.replace(tzinfo=when.tzinfo or UTC) <= datetime.now(UTC)
+
+
+def _restore_session() -> None:
+    """Log back in from the mi_session cookie (a refresh starts a new session state)."""
+    state = st.session_state
+    cookie = st.context.cookies.get(session_cookie.COOKIE_NAME)
+    if state.get(TOKEN_KEY) or state.get(LOGGED_OUT_KEY) is True or state.get(SESSION_EXPIRED_KEY) or not cookie:
+        return
+    res = session_api.get_session(cookie)
+    if res["success"]:
+        data = res["data"]
+        state[TOKEN_KEY] = cookie
+        state[USER_KEY] = data["user"]
+        state[EXPIRES_AT_KEY] = data.get("expires_at")
+        state[REFRESH_AFTER_KEY] = data.get("refresh_after")
+        state["cookie_token"] = cookie  # the browser already holds this cookie
+    elif res["status_code"] == 401:
+        state[SESSION_EXPIRED_KEY] = True
+
+
+def _refresh_if_due() -> None:
+    """Full runs only (fragment reruns never reach this file's top level)."""
+    state = st.session_state
+    if not state.get(REFRESH_AFTER_KEY) or not _passed(state[REFRESH_AFTER_KEY]):
+        return
+    res = session_api.refresh_token()
+    if res["success"]:
+        data = res["data"]
+        state[TOKEN_KEY] = data["access_token"]
+        state[EXPIRES_AT_KEY] = data.get("expires_at")
+        state[REFRESH_AFTER_KEY] = data.get("refresh_after")
+    elif res["status_code"] == 401:
+        state.pop(TOKEN_KEY, None)
+        state[SESSION_EXPIRED_KEY] = True
+
+
+_restore_session()
+if is_logged_in():
+    _refresh_if_due()
+if is_logged_in():
+    if st.session_state.get("cookie_token") != st.session_state[TOKEN_KEY]:
+        session_cookie.write(st.session_state[TOKEN_KEY], st.session_state.get(EXPIRES_AT_KEY))
+        st.session_state["cookie_token"] = st.session_state[TOKEN_KEY]
+
 # Nothing below runs until the user is logged in: each account only ever sees its own data.
 if not is_logged_in():
+    if st.session_state.get(SESSION_EXPIRED_KEY):
+        session_cookie.delete()
+        st.session_state[LOGGED_OUT_KEY] = True
+    elif st.session_state.get(LOGGED_OUT_KEY) and not st.session_state.get("cookie_cleared"):
+        session_cookie.delete()  # in case the deleter mounted by logout() never rendered before its rerun
+        st.session_state["cookie_cleared"] = True
     render_auth_page()
     st.stop()
 
