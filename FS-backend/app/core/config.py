@@ -135,6 +135,7 @@ class Settings(BaseSettings):
     rate_limit_fireflies_connect: str = Field(
         default="5/hour", validation_alias=AliasChoices("RATE_LIMIT_FIREFLIES_CONNECT", "rate_limit_fireflies_connect")
     )
+    rate_limit_retry: str = Field(default="60/hour", validation_alias=AliasChoices("RATE_LIMIT_RETRY", "rate_limit_retry"))
 
     @model_validator(mode="after")
     def check_production_secrets(self) -> "Settings":

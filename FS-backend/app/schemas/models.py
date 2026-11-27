@@ -67,10 +67,13 @@ class MeetingResponse(BaseModel):
     duration: float | None = None
     status: str
     ingestion_status: str = "processed"
+    source: str = "link"
+    purge_at: datetime | None = None
+    retry_until: datetime | None = None
     project_id: str | None = None
     total_turns: int
     created_at: datetime
-    updated_at: datetime
+    updated_at: datetime | None = None
     turns: list[SpeakerTurnResponse] | None = None
 
     model_config = {"from_attributes": True}
@@ -85,6 +88,9 @@ class MeetingSummary(BaseModel):
     duration: float | None = None
     status: str
     ingestion_status: str = "processed"
+    source: str = "link"
+    purge_at: datetime | None = None
+    retry_until: datetime | None = None
     project_id: str | None = None
     total_turns: int
     created_at: datetime
