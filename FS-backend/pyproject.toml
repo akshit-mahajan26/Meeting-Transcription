@@ -17,6 +17,7 @@ dependencies = [
     "bcrypt>=5.0.0",
     "pyjwt>=2.15.1",
     "limits>=5.8.0",
+    "cryptography>=44.0.0",
 ]
 
 [tool.uv]

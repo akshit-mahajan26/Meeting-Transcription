@@ -13,6 +13,10 @@ class PipelineOrchestratorError(Exception):
     """Exception raised when background ingestion orchestration fails."""
 
 
+class FirefliesDisconnected(Exception):
+    """The owner has no usable linked Fireflies key for a meeting that needs one."""
+
+
 def friendly_failure_reason(exc: Exception) -> str:
     """User-facing reason for a failed ingestion. Raw exceptions can carry internal URLs and response bodies,
     so only a message chosen by error type is shown; the full exception is in the server log."""
@@ -35,12 +39,15 @@ def friendly_failure_reason(exc: Exception) -> str:
         if kind == "temporary":
             return "Could not reach Fireflies. Try again in a few minutes."
         return "Fireflies could not return this transcript. Try again later."
+    if isinstance(exc, FirefliesDisconnected):
+        return str(exc)
     if isinstance(exc, PipelineOrchestratorError):
         return "Processing the transcript failed. Try again in a few minutes."
     return "Unexpected error while ingesting this meeting. Try again, and contact support if it persists."
 
 
-def record_failure(user_id: str, meeting_id: str, project_id: str | None, title: str | None, exc: Exception) -> None:
+def record_failure(user_id: str, meeting_id: str, project_id: str | None, title: str | None, exc: Exception,
+                   source: str = "link") -> None:
     """
     Leave a visible FAILED meeting (reason in `summary`) so a background failure is not silent.
     A meeting already PROCESSED is never touched. Never raises: recording must not mask the original error.
@@ -56,7 +63,7 @@ def record_failure(user_id: str, meeting_id: str, project_id: str | None, title:
         if meeting is None:
             db.add(MeetingModel(
                 id=meeting_id, user_id=user_id, project_id=project_id, title=title,
-                summary=reason, status="FAILED",
+                summary=reason, status="FAILED", source=source,
             ))
         else:
             meeting.summary = reason

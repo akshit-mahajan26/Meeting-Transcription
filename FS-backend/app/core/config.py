@@ -105,6 +105,23 @@ class Settings(BaseSettings):
         default=3, ge=1, validation_alias=AliasChoices("INGEST_MAX_CONCURRENCY", "ingest_max_concurrency")
     )
 
+    # Fireflies account linking (plan sections 6, 9, 15)
+    fireflies_key_encryption_key: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("FIREFLIES_KEY_ENCRYPTION_KEY", "fireflies_key_encryption_key"),
+        description="One or more comma-separated Fernet keys; the first encrypts, all decrypt. Unset = linking disabled",
+    )
+    fireflies_auto_sync_interval_minutes: int = Field(
+        default=10, ge=5,
+        validation_alias=AliasChoices("FIREFLIES_AUTO_SYNC_INTERVAL_MINUTES", "fireflies_auto_sync_interval_minutes"),
+    )
+    fireflies_sync_max_meetings: int = Field(
+        default=0, ge=0, validation_alias=AliasChoices("FIREFLIES_SYNC_MAX_MEETINGS", "fireflies_sync_max_meetings")
+    )
+    fireflies_full_sync_days: int = Field(
+        default=7, ge=1, validation_alias=AliasChoices("FIREFLIES_FULL_SYNC_DAYS", "fireflies_full_sync_days")
+    )
+
     # Rate limits (plan 23.3), in `limits` notation: "N/period", several separated by ";"
     rate_limit_login_ip: str = Field(default="20/minute", validation_alias=AliasChoices("RATE_LIMIT_LOGIN_IP", "rate_limit_login_ip"))
     rate_limit_login_failures: str = Field(
@@ -114,6 +131,9 @@ class Settings(BaseSettings):
     rate_limit_query: str = Field(default="20/minute;300/day", validation_alias=AliasChoices("RATE_LIMIT_QUERY", "rate_limit_query"))
     rate_limit_ingest_link: str = Field(
         default="30/hour", validation_alias=AliasChoices("RATE_LIMIT_INGEST_LINK", "rate_limit_ingest_link")
+    )
+    rate_limit_fireflies_connect: str = Field(
+        default="5/hour", validation_alias=AliasChoices("RATE_LIMIT_FIREFLIES_CONNECT", "rate_limit_fireflies_connect")
     )
 
     @model_validator(mode="after")

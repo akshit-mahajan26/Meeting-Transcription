@@ -106,7 +106,7 @@ def _queue_meeting(db: Session, user_id: str, meeting_id: str, project_id: str |
         if meeting is None:
             db.add(MeetingModel(
                 id=meeting_id, user_id=user_id, project_id=scoped_project, title=title,
-                status="QUEUED", ingest_requested_at=now,
+                status="QUEUED", ingest_requested_at=now, source="link",
             ))
         elif meeting.ingest_requested_at is not None:
             db.rollback()
@@ -114,6 +114,8 @@ def _queue_meeting(db: Session, user_id: str, meeting_id: str, project_id: str |
         else:
             meeting.ingest_requested_at = now
             meeting.ingest_claimed_at = None
+            meeting.source = "link"
+            meeting.purge_at = None
             if title:
                 meeting.title = title
             if scoped_project:

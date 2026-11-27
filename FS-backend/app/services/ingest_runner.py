@@ -10,19 +10,21 @@ from sqlalchemy import text
 
 from ..core.config import get_settings
 from ..core.database import SessionLocal
+from .ingestion_failures import record_failure
 from .jobs import run_fireflies_ingest, run_raw_media_upload
 
 logger = logging.getLogger(__name__)
 
 POLL_SECONDS = 30
 SHUTDOWN_GRACE_SECONDS = 60
+INGEST_TIMEOUT_SECONDS = 1200
 
 CLAIM_SQL = text(
     "UPDATE meetings SET ingest_claimed_at = now() WHERE id IN ("
     "SELECT id FROM meetings WHERE ingest_requested_at IS NOT NULL "
     "AND (ingest_claimed_at IS NULL OR ingest_claimed_at < now() - interval '30 minutes') "
     "ORDER BY ingest_requested_at FOR UPDATE SKIP LOCKED LIMIT :free) "
-    "RETURNING id, user_id, project_id, title"
+    "RETURNING id, user_id, project_id, title, source"
 )
 CLEAR_SQL = text("UPDATE meetings SET ingest_requested_at = NULL, ingest_claimed_at = NULL WHERE id = :id")
 
@@ -119,7 +121,21 @@ class IngestRunner:
     async def _process(self, row: dict[str, Any]) -> None:
         meeting_id = row["id"]
         try:
-            await run_fireflies_ingest(row["user_id"], meeting_id, row.get("project_id"), row.get("title"))
+            await asyncio.wait_for(
+                run_fireflies_ingest(
+                    row["user_id"], meeting_id, row.get("project_id"), row.get("title"), row.get("source") or "link"
+                ),
+                timeout=INGEST_TIMEOUT_SECONDS,
+            )
+        except TimeoutError:
+            logger.error(f"[Ingest Runner] Ingest of '{meeting_id}' timed out after {INGEST_TIMEOUT_SECONDS}s.")
+            try:
+                await asyncio.to_thread(
+                    record_failure, row["user_id"], meeting_id, row.get("project_id"), row.get("title"),
+                    TimeoutError("ingestion timed out"), row.get("source") or "link",
+                )
+            except Exception:
+                logger.exception(f"[Ingest Runner] Could not record timeout for '{meeting_id}'.")
         except asyncio.CancelledError:
             raise  # shutdown: keep the claim; it becomes reclaimable after 30 minutes
         except Exception:

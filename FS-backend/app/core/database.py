@@ -76,6 +76,16 @@ class UserModel(Base):
     created_at = Column(DateTime(timezone=True), default=utc_now, nullable=False)
     tokens_valid_after = Column(DateTime(timezone=True), nullable=True)  # tokens issued before this are rejected (logout)
 
+    # Fireflies connection (plan 5.1): one linked Fireflies account per user; the key is Fernet-encrypted (app/core/crypto.py)
+    fireflies_api_key_encrypted = Column(Text, nullable=True)  # not null = linked
+    fireflies_account_email = Column(String(255), nullable=True)
+    fireflies_auto_sync = Column(Boolean, nullable=False, default=False, server_default="false")
+    fireflies_sync_project_id = Column(String(100), ForeignKey("projects.id", ondelete="SET NULL"), nullable=True)
+    fireflies_sync_heartbeat_at = Column(DateTime(timezone=True), nullable=True)  # set while a sync runs
+    fireflies_last_synced_at = Column(DateTime(timezone=True), nullable=True)  # start of the last completed sync
+    fireflies_last_full_sync_at = Column(DateTime(timezone=True), nullable=True)  # start of the last completed full sync
+    fireflies_last_sync_result = Column(JSONB, nullable=True)
+
 
 class ProjectModel(Base):
     """Tier 1: Enterprise Project Entity."""
@@ -105,6 +115,9 @@ class MeetingModel(Base):
     status = Column(String(50), default="PROCESSED", nullable=False)
     ingest_requested_at = Column(DateTime(timezone=True), nullable=True)  # queued for ingestion (in-process runner)
     ingest_claimed_at = Column(DateTime(timezone=True), nullable=True)  # a runner is processing it since this time
+    source = Column(String(20), nullable=False, default="link", server_default="link")  # link | fireflies_sync
+    purge_at = Column(DateTime(timezone=True), nullable=True)  # permanently deleted at this time (7-day retention)
+    retry_until = Column(DateTime(timezone=True), nullable=True)  # FAILED only: auto-retried until then; null = skipped
     created_at = Column(DateTime(timezone=True), default=utc_now, nullable=False)
     updated_at = Column(DateTime(timezone=True), default=utc_now, onupdate=utc_now, nullable=False)
 

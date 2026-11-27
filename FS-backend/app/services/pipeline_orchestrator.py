@@ -6,7 +6,6 @@ import uuid
 from typing import Any
 
 import httpx
-from sqlalchemy.orm import Session
 
 from ..core.config import Settings, get_settings
 from ..core.database import (
@@ -16,6 +15,7 @@ from ..core.database import (
     SpeakerTurnModel,
 )
 from .ingestion_failures import PipelineOrchestratorError
+from .orchestrator_persistence import check_idempotency
 from .ownership import claim_project, get_owned_meeting
 
 logger = logging.getLogger(__name__)
@@ -115,6 +115,7 @@ class BackendPipelineOrchestrator:
         user_id: str,
         project_id: str | None = None,
         custom_title: str | None = None,
+        source: str = "link",
     ) -> dict[str, Any]:
         """Full ingestion: idempotency check, AI Engine dispatch, embeddings, atomic 4-tier persistence."""
 
@@ -130,25 +131,7 @@ class BackendPipelineOrchestrator:
         content_hash = self.compute_transcript_hash(sentences)
 
         # 2. Check Database for Idempotency Hit (sync DB work runs off the event loop)
-        def check_idempotency() -> dict[str, Any] | None:
-            db: Session = SessionLocal()
-            try:
-                existing = get_owned_meeting(db, user_id, meeting_id)
-                if existing and existing.content_hash == content_hash and existing.status == "PROCESSED":
-                    logger.info(f"Idempotency hit for meeting '{meeting_id}' (content_hash: {content_hash[:8]}). Skipping re-processing.")
-                    return {
-                        "status": "success",
-                        "meeting_id": meeting_id,
-                        "is_idempotent_hit": True,
-                        "title": existing.title,
-                        "total_turns": len(existing.turns) if existing.turns else 0,
-                        "total_topics": len(existing.topics) if existing.topics else 0,
-                    }
-                return None
-            finally:
-                db.close()
-
-        hit = await asyncio.to_thread(check_idempotency)
+        hit = await asyncio.to_thread(check_idempotency, user_id, meeting_id, content_hash, source)
         if hit is not None:
             return hit
 
@@ -249,6 +232,7 @@ class BackendPipelineOrchestrator:
                         date=date_str,
                         duration=duration,
                         status="PROCESSED",
+                        source=source,
                     )
                     db.add(meeting)
                     db.flush()
@@ -262,10 +246,15 @@ class BackendPipelineOrchestrator:
                     meeting.date = date_str or meeting.date
                     meeting.duration = duration or meeting.duration
                     meeting.status = "PROCESSED"
+                    if source == "link":
+                        meeting.source = "link"
+                        meeting.purge_at = None
                     # Clean old topics and turns
                     db.query(MeetingTopicModel).filter(MeetingTopicModel.meeting_id == meeting_id).delete()
                     db.query(SpeakerTurnModel).filter(SpeakerTurnModel.meeting_id == meeting_id).delete()
                     db.flush()
+
+                meeting.retry_until = None
 
                 # Tier 3: Meeting Topics
                 topic_id_map: dict[int, str] = {}
@@ -316,7 +305,7 @@ class BackendPipelineOrchestrator:
 
                     meta_dict = {
                         "speaker": spk_name, "timestamp": _fmt_ts(s_start), "meeting_id": str(meeting_id),
-                        "project_id": str(project_id or "default-project"), "signals": signals_list,
+                        "project_id": str(meeting.project_id or "default-project"), "signals": signals_list,
                         "is_question": is_q, "is_commitment": is_c, "is_blocker": is_b,
                     }
 

@@ -49,6 +49,25 @@ query GetTranscript($transcriptId: String!) {
 }
 """
 
+_TRANSCRIPT_FIELDS = TRANSCRIPT_QUERY[TRANSCRIPT_QUERY.index("    id\n"):TRANSCRIPT_QUERY.index("  }\n}")]
+
+TRANSCRIPTS_QUERY = (
+    "query ListTranscripts($limit: Int, $skip: Int, $fromDate: DateTime, $toDate: DateTime) {\n"
+    "  transcripts(limit: $limit, skip: $skip, fromDate: $fromDate, toDate: $toDate) {\n"
+    + _TRANSCRIPT_FIELDS
+    + "  }\n}\n"
+)
+
+USER_QUERY = """
+query GetCurrentUser {
+  user {
+    user_id
+    email
+    name
+  }
+}
+"""
+
 UPLOAD_AUDIO_MUTATION = """
 mutation UploadAudio($input: AudioUploadInput!) {
   uploadAudio(input: $input) {
@@ -170,13 +189,36 @@ def save_transcript_to_file(transcript_data: dict[str, Any], meeting_id: str, us
         return None
 
 
+def _normalize_transcript(transcript_data: dict[str, Any], transcript_id: str | None = None) -> dict[str, Any]:
+    """Shape a raw Fireflies transcript the same way for single fetches and listings."""
+    fallback_id = transcript_id or transcript_data.get("id")
+    sentences = transcript_data.get("sentences", []) or []
+    speakers = transcript_data.get("speakers", []) or []
+
+    # Derive speakers if missing
+    if not speakers and sentences:
+        seen = set()
+        for s in sentences:
+            name = s.get("speaker_name") or "Unknown Speaker"
+            sid = s.get("speaker_id") or name
+            if sid not in seen:
+                seen.add(sid)
+                speakers.append({"id": sid, "name": name})
+
+    return {
+        "id": str(transcript_data.get("id") or fallback_id),
+        "title": str(transcript_data.get("title") or f"Meeting {fallback_id}"),
+        "date": str(transcript_data.get("date")) if transcript_data.get("date") else None,
+        "duration": float(transcript_data.get("duration") or 0.0),
+        "summary": transcript_data.get("summary"),
+        "speakers": speakers,
+        "sentences": sentences,
+        "raw_payload": transcript_data,
+    }
+
+
 class FirefliesClient:
-    """
-    Dedicated Asynchronous Fireflies.ai GraphQL Client for FS-backend.
-    Handles:
-    1. Querying transcripts by transcript ID.
-    2. Submitting raw media links via the uploadAudio GraphQL mutation.
-    """
+    """Asynchronous Fireflies.ai GraphQL client."""
 
     def __init__(
         self,
@@ -283,15 +325,7 @@ class FirefliesClient:
     async def fetch_transcript_by_id(
         self, transcript_id: str, save_to_file: bool = False, user_id: str | None = None
     ) -> dict[str, Any]:
-        """
-        Query Fireflies GraphQL endpoint for a complete meeting transcript.
-
-        Args:
-            transcript_id: The unique Fireflies transcript ID.
-
-        Returns:
-            dict containing meeting title, date, duration, participants/speakers, and sentences.
-        """
+        """Fetch one complete transcript by ID, normalised."""
         logger.info(f"Fetching transcript for ID: '{transcript_id}' from Fireflies...")
         data = await self._execute_graphql(TRANSCRIPT_QUERY, {"transcriptId": transcript_id})
         transcript_data = data.get("transcript")
@@ -305,41 +339,41 @@ class FirefliesClient:
         if save_to_file and user_id:
             save_transcript_to_file(transcript_data, transcript_id, user_id)
 
-        sentences = transcript_data.get("sentences", []) or []
-        speakers = transcript_data.get("speakers", []) or []
+        return _normalize_transcript(transcript_data, transcript_id)
 
-        # Derive speakers if missing
-        if not speakers and sentences:
-            seen = set()
-            for s in sentences:
-                name = s.get("speaker_name") or "Unknown Speaker"
-                sid = s.get("speaker_id") or name
-                if sid not in seen:
-                    seen.add(sid)
-                    speakers.append({"id": sid, "name": name})
+    async def get_current_user(self) -> dict[str, Any]:
+        """Run the `user` query for the key's owner: {"user_id", "email", "name"}."""
+        data = await self._execute_graphql(USER_QUERY, {})
+        user = data.get("user") or {}
+        return {"user_id": user.get("user_id"), "email": user.get("email"), "name": user.get("name")}
 
-        return {
-            "id": str(transcript_data.get("id") or transcript_id),
-            "title": str(transcript_data.get("title") or f"Meeting {transcript_id}"),
-            "date": str(transcript_data.get("date")) if transcript_data.get("date") else None,
-            "duration": float(transcript_data.get("duration") or 0.0),
-            "summary": transcript_data.get("summary"),
-            "speakers": speakers,
-            "sentences": sentences,
-            "raw_payload": transcript_data,
-        }
+    async def list_transcripts(
+        self,
+        limit: int = 10,
+        skip: int = 0,
+        from_date: datetime | None = None,
+        to_date: datetime | None = None,
+    ) -> list[dict[str, Any]]:
+        """One page of transcripts, normalised like fetch_transcript_by_id. A timeout is retried once with limit=5."""
+
+        def _iso(value: datetime | None) -> str | None:
+            return value.astimezone(UTC).isoformat().replace("+00:00", "Z") if value else None
+
+        async def _page(page_limit: int) -> list[dict[str, Any]]:
+            variables = {"limit": page_limit, "skip": skip, "fromDate": _iso(from_date), "toDate": _iso(to_date)}
+            data = await self._execute_graphql(TRANSCRIPTS_QUERY, variables)
+            return [_normalize_transcript(t) for t in (data.get("transcripts") or []) if t]
+
+        try:
+            return await _page(limit)
+        except FirefliesAPIError as exc:
+            if exc.status_code not in (504, 408) and (exc.code or "") != "request_timeout":
+                raise
+            logger.warning("Fireflies listing timed out; retrying the page once with limit=5.")
+            return await _page(5)
 
     async def upload_audio_from_url(self, audio_url: str, title: str | None = None) -> dict[str, Any]:
-        """
-        Submit an external raw media recording URL (mp3, wav, mp4, m4a) to Fireflies for async transcription.
-
-        Args:
-            audio_url: Public direct link to audio/video file.
-            title: Optional custom meeting title.
-
-        Returns:
-            dict with uploadAudio mutation confirmation.
-        """
+        """Submit a public media URL to Fireflies for async transcription."""
         logger.info(f"Submitting audio URL to Fireflies uploadAudio mutation: '{audio_url}'...")
         input_vars = {
             "input": {
