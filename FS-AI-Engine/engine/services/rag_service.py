@@ -7,6 +7,7 @@ Query service: runs a user question through the LangGraph chat pipeline
 
 from __future__ import annotations
 
+import hashlib
 import logging
 from collections.abc import AsyncIterator
 from typing import Any
@@ -17,6 +18,11 @@ from ..core.config import settings
 from ..graphs.chat_graph import run_chat_graph, stream_chat_graph
 
 logger = logging.getLogger("fs-ai-engine.rag_service")
+
+
+def _fp(text: str) -> str:
+    """Log-safe fingerprint of user text: length and short sha256 (the text itself is logged at DEBUG only)."""
+    return f"len={len(text)} sha={hashlib.sha256(text.encode('utf-8')).hexdigest()[:8]}"
 
 
 class CitationModel(BaseModel):
@@ -77,8 +83,9 @@ async def process_user_query(
 ) -> RAGQueryResponse:
     """Answer a question with the chat graph. Errors propagate to the caller (no hidden second pipeline)."""
     clean_query = query.strip()
+    logger.debug(f"[QUERY] '{clean_query}'")
     logger.info(
-        f"[QUERY] '{clean_query}' | Project: {project_id} | Meeting: {meeting_id} | Speaker: {speaker}"
+        f"[QUERY] {_fp(clean_query)} | Project: {project_id} | Meeting: {meeting_id} | Speaker: {speaker}"
     )
 
     graph_res = await run_chat_graph(
@@ -105,8 +112,9 @@ async def stream_user_query(
     ("final", RAGQueryResponse): the same response the non-streaming call returns.
     """
     clean_query = query.strip()
+    logger.debug(f"[QUERY:STREAM] '{clean_query}'")
     logger.info(
-        f"[QUERY:STREAM] '{clean_query}' | Project: {project_id} | Meeting: {meeting_id} | Speaker: {speaker}"
+        f"[QUERY:STREAM] {_fp(clean_query)} | Project: {project_id} | Meeting: {meeting_id} | Speaker: {speaker}"
     )
     async for kind, payload in stream_chat_graph(
         query=clean_query,

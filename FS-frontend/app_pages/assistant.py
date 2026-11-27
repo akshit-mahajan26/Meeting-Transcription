@@ -24,7 +24,9 @@ def build_chat_history(messages: list[dict], max_questions: int = 5) -> list[dic
     usable = [m for m in messages if m.get("content") and not m.get("error")]
     asked = [i for i, m in enumerate(usable) if m["role"] == "user"]
     start = asked[-max_questions] if len(asked) > max_questions else 0
-    return [{"role": m["role"], "content": m["content"]} for m in usable[start:]]
+    return [
+        {"role": m["role"], "content": m["content"][: frontend_config.HISTORY_MESSAGE_MAX_CHARS]} for m in usable[start:]
+    ]
 
 
 def _ask(question: str, scope: Scope, chat_history: list[dict[str, str]]) -> dict:

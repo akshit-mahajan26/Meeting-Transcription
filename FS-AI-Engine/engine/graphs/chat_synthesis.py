@@ -289,8 +289,8 @@ async def llm_synthesis_node(state: ChatState, config: Optional[RunnableConfig] 
 
     llm_client = get_llm_client()
     history = [
-        {"role": m["role"], "content": m["content"]}
-        for m in state.get("history") or []
+        {"role": m["role"], "content": m["content"][: settings.history_message_max_chars]}
+        for m in (list(state.get("history") or [])[-settings.history_max_messages :] if settings.history_max_messages else [])
         if m.get("role") in ("user", "assistant") and m.get("content")
     ]
     messages = [

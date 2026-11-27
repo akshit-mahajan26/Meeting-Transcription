@@ -54,6 +54,10 @@ class FrontendConfig(BaseSettings):
         default=True,
         description="Show answers as they are written (server-sent events). Off: wait for the complete answer."
     )
+    HISTORY_MESSAGE_MAX_CHARS: int = Field(
+        default=4000,
+        description="Longest single message sent as chat history; must not exceed the backend's HISTORY_MESSAGE_MAX_CHARS"
+    )
 
     model_config = SettingsConfigDict(
         env_file=[".env", "FS-frontend/.env", "frontend/.env"],

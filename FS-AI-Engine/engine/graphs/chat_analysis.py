@@ -7,6 +7,7 @@ the standalone question into the structured intent, entities, time scope and dat
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import re
@@ -20,6 +21,11 @@ from .chat_entities import is_name_token_match
 from .chat_query import QueryIntent
 
 logger = logging.getLogger("fs-ai-engine.chat_graph")
+
+
+def _fp(text: str) -> str:
+    """Log-safe fingerprint of user text: length and short sha256 (the text itself is logged at DEBUG only)."""
+    return f"len={len(text)} sha={hashlib.sha256(text.encode('utf-8')).hexdigest()[:8]}"
 
 CATALOG_ENTITIES = ("projects", "meetings", "participants", "topics")
 
@@ -161,5 +167,6 @@ async def analyze_query(
         catalog_entities=entities,
         needs_retrieval=parsed.get("needs_retrieval") is not False,
     )
-    logger.info(f"[LANGGRAPH: ANALYZE_QUERY] '{query}' -> {analysis}")
+    logger.info(f"[LANGGRAPH: ANALYZE_QUERY] {_fp(query)}")
+    logger.debug(f"[LANGGRAPH: ANALYZE_QUERY] '{query}' -> {analysis}")
     return analysis

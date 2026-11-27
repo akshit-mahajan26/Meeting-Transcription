@@ -41,7 +41,21 @@ def utc_now():
 
 
 # Engine configuration
-engine = create_engine(settings.database_url, pool_pre_ping=True)
+engine = create_engine(
+    settings.database_url,
+    pool_pre_ping=True,
+    pool_size=settings.db_pool_size,
+    max_overflow=settings.db_max_overflow,
+    pool_timeout=settings.db_pool_timeout,
+    pool_recycle=settings.db_pool_recycle,
+)
+logging.getLogger(__name__).info(
+    "DB pool: size=%s max_overflow=%s timeout=%ss recycle=%ss",
+    settings.db_pool_size,
+    settings.db_max_overflow,
+    settings.db_pool_timeout,
+    settings.db_pool_recycle,
+)
 
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()

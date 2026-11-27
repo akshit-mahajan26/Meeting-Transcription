@@ -9,6 +9,7 @@ execution entrypoint for FastAPI engine routes.
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import time
 from collections.abc import AsyncIterator
@@ -29,6 +30,11 @@ from .chat_subgraphs import (
 __all__ = ["build_chat_graph", "compiled_chat_graph", "route_after_filters", "route_after_retrieval", "run_chat_graph", "smalltalk_node"]
 
 logger = logging.getLogger("fs-ai-engine.chat_graph")
+
+
+def _fp(text: str) -> str:
+    """Log-safe fingerprint of user text: length and short sha256 (the text itself is logged at DEBUG only)."""
+    return f"len={len(text)} sha={hashlib.sha256(text.encode('utf-8')).hexdigest()[:8]}"
 
 
 # ============================================================================
@@ -109,8 +115,9 @@ def _initial_state(
 ) -> ChatState:
     start_time = time.time()
     logger.info("=" * 70)
+    logger.debug(f"[LANGGRAPH CHAT GRAPH] Query: '{query}'")
     logger.info(
-        f"[LANGGRAPH CHAT GRAPH] Invoking query: '{query}' | "
+        f"[LANGGRAPH CHAT GRAPH] Invoking query: {_fp(query)} | "
         f"Project: {project_id} | Meeting: {meeting_id} | Speaker: {speaker}"
     )
     return {

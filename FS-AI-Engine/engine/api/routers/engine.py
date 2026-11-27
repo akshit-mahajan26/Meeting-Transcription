@@ -12,25 +12,31 @@ from fastapi import APIRouter, HTTPException, status
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
+from engine.core.config import get_settings
 from engine.services.rag_service import RAGQueryResponse, process_user_query, stream_user_query
 
 logger = logging.getLogger("fs-ai-engine")
 
 router = APIRouter(tags=["engine"])
+settings = get_settings()
 
 
 class HistoryMessage(BaseModel):
     role: Literal["user", "assistant"]
-    content: str = Field(..., max_length=8000)
+    content: str = Field(..., max_length=settings.history_message_max_chars)
 
 
 class EngineQueryRequest(BaseModel):
-    query: str = Field(..., description="Natural language query or question")
+    query: str = Field(
+        ..., min_length=1, max_length=settings.query_max_chars, description="Natural language query or question"
+    )
     user_id: str = Field(..., min_length=1, description="Authenticated account the query is scoped to (set by FS-backend)")
     project_id: str | None = Field(default=None, description="Optional project boundary scoping")
     meeting_id: str | None = Field(default=None, description="Optional meeting ID filter")
     speaker: str | None = Field(default=None, description="Optional speaker filter")
-    history: list[HistoryMessage] = Field(default_factory=list, max_length=50, description="Recent conversation turns, oldest first")
+    history: list[HistoryMessage] = Field(
+        default_factory=list, max_length=settings.history_max_messages, description="Recent conversation turns, oldest first"
+    )
 
 
 @router.post(

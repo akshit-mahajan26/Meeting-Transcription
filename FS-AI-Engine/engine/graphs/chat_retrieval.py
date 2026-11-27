@@ -64,7 +64,7 @@ async def embed_query_node(state: ChatState) -> dict[str, Any]:
 
     embedding_service = EmbeddingService()
     try:
-        vectors = await embedding_service.generate_embeddings([query])
+        vectors = await embedding_service.generate_embeddings([query], purpose="chat")
         query_vector = vectors[0] if vectors else []
     except Exception as exc:  # keyword scoring still works without a query vector
         logger.warning(f"[LANGGRAPH: EMBED_QUERY] Embedding failed, using keyword retrieval only: {exc}")

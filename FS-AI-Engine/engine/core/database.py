@@ -22,7 +22,18 @@ if db_url:
             db_url,
             echo=False,
             pool_pre_ping=True,
+            pool_size=settings.db_pool_size,
+            max_overflow=settings.db_max_overflow,
+            pool_timeout=settings.db_pool_timeout,
+            pool_recycle=settings.db_pool_recycle,
             future=True,
+        )
+        logger.info(
+            "DB pool: size=%s max_overflow=%s timeout=%ss recycle=%ss",
+            settings.db_pool_size,
+            settings.db_max_overflow,
+            settings.db_pool_timeout,
+            settings.db_pool_recycle,
         )
         AsyncSessionLocal = async_sessionmaker(
             bind=async_engine,

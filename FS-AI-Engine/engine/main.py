@@ -1,5 +1,4 @@
 from fastapi import Depends, FastAPI
-from fastapi.middleware.cors import CORSMiddleware
 
 from .api.routers.engine import router as engine_router
 from .api.routes import router as transcript_router
@@ -14,15 +13,6 @@ app = FastAPI(
     description="Meeting Transcript Intelligence Platform - Core AI & Processing Engine",
     docs_url="/docs",
     openapi_url="/openapi.json",
-)
-
-# CORS Middleware
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
 )
 
 # Versioned API routers (each mounted once):

@@ -7,12 +7,18 @@ standalone question (typos fixed, follow-ups resolved). Routing decisions live i
 
 from __future__ import annotations
 
+import hashlib
 import logging
 
 from ..core.config import settings
 from ..services.llm_client import get_llm_client
 
 logger = logging.getLogger("fs-ai-engine.chat_graph")
+
+
+def _fp(text: str) -> str:
+    """Log-safe fingerprint of user text: length and short sha256 (the text itself is logged at DEBUG only)."""
+    return f"len={len(text)} sha={hashlib.sha256(text.encode('utf-8')).hexdigest()[:8]}"
 
 REWRITE_PROMPT = """You rewrite the user's latest message into one clear, standalone question for a meeting-transcript assistant.
 
@@ -58,5 +64,6 @@ async def rewrite_query(query: str, history: list[dict[str, str]] | None = None)
     rewritten = (reply or "").strip().strip('"').strip()
     if not rewritten or len(rewritten) > 4 * len(query) + 200:
         return query
-    logger.info(f"[LANGGRAPH: REWRITE_QUERY] '{query}' -> '{rewritten}'")
+    logger.info(f"[LANGGRAPH: REWRITE_QUERY] {_fp(query)} -> {_fp(rewritten)}")
+    logger.debug(f"[LANGGRAPH: REWRITE_QUERY] '{query}' -> '{rewritten}'")
     return rewritten

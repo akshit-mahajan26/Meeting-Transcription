@@ -70,6 +70,35 @@ class Settings(BaseSettings):
         description="Internal API key shared with FS-AI-Engine (must be provided via environment or .env)",
     )
 
+    # Raw Fireflies transcript JSON files (plan 23.7): off by default; when on, stored per account
+    save_raw_transcripts: bool = Field(
+        default=False,
+        validation_alias=AliasChoices("SAVE_RAW_TRANSCRIPTS", "save_raw_transcripts"),
+    )
+    raw_transcripts_dir: str = Field(
+        default="transcripts",
+        validation_alias=AliasChoices("RAW_TRANSCRIPTS_DIR", "raw_transcripts_dir"),
+        description="Folder for raw transcript files; a relative path is resolved from the project root",
+    )
+
+    # Request limits (plan 23.4)
+    query_max_chars: int = Field(default=2000, ge=1, validation_alias=AliasChoices("QUERY_MAX_CHARS", "query_max_chars"))
+    history_max_messages: int = Field(
+        default=10, ge=0, validation_alias=AliasChoices("HISTORY_MAX_MESSAGES", "history_max_messages")
+    )
+    history_message_max_chars: int = Field(
+        default=4000, ge=1, validation_alias=AliasChoices("HISTORY_MESSAGE_MAX_CHARS", "history_message_max_chars")
+    )
+    max_request_body_bytes: int = Field(
+        default=1_048_576, ge=1024, validation_alias=AliasChoices("MAX_REQUEST_BODY_BYTES", "max_request_body_bytes")
+    )
+
+    # Database connection pool (plan 23.6)
+    db_pool_size: int = Field(default=5, ge=1, validation_alias=AliasChoices("DB_POOL_SIZE", "db_pool_size"))
+    db_max_overflow: int = Field(default=5, ge=0, validation_alias=AliasChoices("DB_MAX_OVERFLOW", "db_max_overflow"))
+    db_pool_timeout: int = Field(default=30, ge=1, validation_alias=AliasChoices("DB_POOL_TIMEOUT", "db_pool_timeout"))
+    db_pool_recycle: int = Field(default=1800, ge=-1, validation_alias=AliasChoices("DB_POOL_RECYCLE", "db_pool_recycle"))
+
     @property
     def FIREFLIES_API_KEY(self) -> str | None:
         return self.fireflies_api_key

@@ -251,6 +251,7 @@ class TopicSegmenter:
                     model=self.llm_model,
                     max_tokens=30,
                     temperature=0.2,
+                    purpose="ingest",
                 ),
                 timeout=10.0,
             )

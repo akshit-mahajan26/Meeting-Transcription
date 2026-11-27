@@ -8,6 +8,7 @@ from pydantic import BaseModel, Field, HttpUrl
 from sqlalchemy.orm import Session
 
 from ....api.deps import get_current_user
+from ....core.config import get_settings
 from ....core.database import UserModel, get_db
 from ....services.fireflies_client import (
     FirefliesClient,
@@ -110,7 +111,11 @@ async def _process_fireflies_dashboard_task(
     """Background worker task to fetch transcript from Fireflies and orchestrate downstream ingestion."""
     logger.info(f"[Background Task] Initiating transcript fetch for ID: '{transcript_id}'...")
     try:
-        transcript_data = await fireflies_svc.fetch_transcript_by_id(transcript_id=transcript_id)
+        transcript_data = await fireflies_svc.fetch_transcript_by_id(
+            transcript_id=transcript_id,
+            save_to_file=get_settings().save_raw_transcripts,
+            user_id=user_id,
+        )
         logger.info(f"[Background Task] Fetched transcript for '{transcript_id}'. Running AI Engine pipeline...")
         result = await orchestrator_svc.orchestrate_meeting_ingestion(
             transcript_dict=transcript_data,
@@ -118,7 +123,11 @@ async def _process_fireflies_dashboard_task(
             project_id=project_id,
             custom_title=title,
         )
-        logger.info(f"[Background Task] Successfully ingested meeting '{transcript_id}': {result}")
+        logger.info(
+            f"[Background Task] Successfully ingested meeting '{result.get('meeting_id')}': "
+            f"is_idempotent_hit={result.get('is_idempotent_hit')}, total_turns={result.get('total_turns')}, "
+            f"total_topics={result.get('total_topics')}"
+        )
     except Exception as exc:
         logger.error(f"[Background Task] Failed to process transcript '{transcript_id}': {exc}", exc_info=True)
         record_failure(user_id, transcript_id, project_id, title, exc)

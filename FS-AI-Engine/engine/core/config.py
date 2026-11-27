@@ -94,6 +94,39 @@ class Settings(BaseSettings):
     )
     max_turns_per_segment: int = Field(default=10)
 
+    # Request limits (plan 23.4); must match FS-backend
+    query_max_chars: int = Field(default=2000, ge=1, validation_alias=AliasChoices("QUERY_MAX_CHARS", "query_max_chars"))
+    history_max_messages: int = Field(
+        default=10, ge=0, validation_alias=AliasChoices("HISTORY_MAX_MESSAGES", "history_max_messages")
+    )
+    history_message_max_chars: int = Field(
+        default=4000, ge=1, validation_alias=AliasChoices("HISTORY_MESSAGE_MAX_CHARS", "history_message_max_chars")
+    )
+
+    # Gemini concurrency and retries (plan 23.4): chat and ingestion use separate limits
+    llm_chat_max_concurrency: int = Field(
+        default=16, ge=1, validation_alias=AliasChoices("LLM_CHAT_MAX_CONCURRENCY", "llm_chat_max_concurrency")
+    )
+    llm_ingest_max_concurrency: int = Field(
+        default=8, ge=1, validation_alias=AliasChoices("LLM_INGEST_MAX_CONCURRENCY", "llm_ingest_max_concurrency")
+    )
+    embed_chat_max_concurrency: int = Field(
+        default=8, ge=1, validation_alias=AliasChoices("EMBED_CHAT_MAX_CONCURRENCY", "embed_chat_max_concurrency")
+    )
+    embed_ingest_max_concurrency: int = Field(
+        default=4, ge=1, validation_alias=AliasChoices("EMBED_INGEST_MAX_CONCURRENCY", "embed_ingest_max_concurrency")
+    )
+    llm_max_retries: int = Field(default=3, ge=0, validation_alias=AliasChoices("LLM_MAX_RETRIES", "llm_max_retries"))
+    llm_timeout_seconds: float = Field(
+        default=60.0, gt=0, validation_alias=AliasChoices("LLM_TIMEOUT_SECONDS", "llm_timeout_seconds")
+    )
+
+    # Database connection pool (plan 23.6)
+    db_pool_size: int = Field(default=10, ge=1, validation_alias=AliasChoices("DB_POOL_SIZE", "db_pool_size"))
+    db_max_overflow: int = Field(default=10, ge=0, validation_alias=AliasChoices("DB_MAX_OVERFLOW", "db_max_overflow"))
+    db_pool_timeout: int = Field(default=30, ge=1, validation_alias=AliasChoices("DB_POOL_TIMEOUT", "db_pool_timeout"))
+    db_pool_recycle: int = Field(default=1800, ge=-1, validation_alias=AliasChoices("DB_POOL_RECYCLE", "db_pool_recycle"))
+
     @property
     def llm_model(self) -> str:
         return self.LLM_MODEL_NAME

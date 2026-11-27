@@ -1,9 +1,11 @@
+import asyncio
 import logging
 import os
-import re
 from collections.abc import AsyncIterator
 
 from openai import AsyncOpenAI
+
+from .llm_fallback import heuristic_fallback
 
 try:
     from ..core.config import settings
@@ -20,6 +22,19 @@ except ImportError:
     pass
 
 logger = logging.getLogger(__name__)
+
+_semaphores: dict[str, asyncio.Semaphore] = {}
+
+
+def _limit(purpose: str) -> asyncio.Semaphore:
+    """Process-wide concurrency limit for LLM calls, created lazily: 'chat' or 'ingest'."""
+    if purpose not in ("chat", "ingest"):
+        raise ValueError(f"purpose must be 'chat' or 'ingest', got {purpose!r}")
+    sem = _semaphores.get(purpose)
+    if sem is None:
+        size = settings.llm_chat_max_concurrency if purpose == "chat" else settings.llm_ingest_max_concurrency
+        sem = _semaphores[purpose] = asyncio.Semaphore(size)
+    return sem
 
 
 class LLMClient:
@@ -86,7 +101,8 @@ class LLMClient:
                 self._client = AsyncOpenAI(
                     base_url=self.base_url,
                     api_key=self.api_key,
-                    timeout=35.0,
+                    max_retries=settings.llm_max_retries,
+                    timeout=settings.llm_timeout_seconds,
                 )
                 logger.info(f"[LLMClient] Initialized Gemini client (Endpoint: {self.base_url}, Default Model: {self.default_model})")
             except Exception as e:
@@ -98,6 +114,35 @@ class LLMClient:
         return self._client
 
     async def generate_chat_completion(
+        self,
+        messages: list[dict[str, str]],
+        model: str | None = None,
+        max_tokens: int = 800,
+        temperature: float = 0.2,
+        purpose: str = "chat",
+    ) -> str:
+        """Chat completion, limited to the concurrency of its purpose ('chat' or 'ingest')."""
+        async with _limit(purpose):
+            return await self._generate_chat_completion(messages, model, max_tokens, temperature)
+
+    async def stream_chat_completion(
+        self,
+        messages: list[dict[str, str]],
+        model: str | None = None,
+        max_tokens: int = 800,
+        temperature: float = 0.2,
+        purpose: str = "chat",
+    ) -> AsyncIterator[str]:
+        """Streaming twin of generate_chat_completion; the slot is held for the whole stream and always released."""
+        async with _limit(purpose):
+            inner = self._stream_chat_completion(messages, model, max_tokens, temperature)
+            try:
+                async for delta in inner:
+                    yield delta
+            finally:
+                await inner.aclose()
+
+    async def _generate_chat_completion(
         self,
         messages: list[dict[str, str]],
         model: str | None = None,
@@ -163,7 +208,7 @@ class LLMClient:
                 logger.warning(f"[LLMClient] Google GenAI SDK call failed: {e}. Executing conversational synthesis fallback.")
 
         # Deterministic Conversational Fallback
-        return self._generate_heuristic_fallback(messages)
+        return heuristic_fallback(messages)
 
     def _normalize_model(self, model: str | None) -> str:
         """The model name the Gemini endpoint accepts (provider prefixes stripped)."""
@@ -174,7 +219,7 @@ class LLMClient:
             target_model = target_model[len("gemini/"):]
         return target_model
 
-    async def stream_chat_completion(
+    async def _stream_chat_completion(
         self,
         messages: list[dict[str, str]],
         model: str | None = None,
@@ -241,122 +286,7 @@ class LLMClient:
                     raise
                 logger.warning(f"[LLMClient] Google GenAI streaming call failed: {e}. Executing conversational synthesis fallback.")
 
-        yield self._generate_heuristic_fallback(messages)
-
-    def _generate_heuristic_fallback(self, messages: list[dict[str, str]]) -> str:
-        """
-        Generates natural, conversational, professional synthesis responses when running offline or in fallback mode.
-        Strictly avoids raw transcript turn dumps in the answer narrative.
-        """
-        user_parts = [m.get('content', '') for m in messages if m.get('role') == 'user']
-        user_prompt = user_parts[-1] if user_parts else ''  # current question only, not earlier history turns
-        lower_prompt = user_prompt.lower()
-
-        # 1. Conversational Grounded Synthesis for Meeting Excerpts & Context
-        if any(marker in lower_prompt for marker in [
-            'meeting transcript context:',
-            'relevant meeting transcript excerpts:',
-            'verified meeting transcript excerpts:',
-            'verified meeting excerpts:',
-            'transcript excerpts:'
-        ]):
-            excerpts = []
-            current_speaker = None
-            for line in user_prompt.splitlines():
-                line_str = line.strip()
-                spk_match = re.search(r"-\s*\[([^\]]+)\]:\s*\"(.*)\"", line_str)
-                if spk_match:
-                    excerpts.append((spk_match.group(1), spk_match.group(2)))
-                    continue
-
-                if line_str.startswith('Speaker:') or (line_str.startswith('[') and 'Speaker:' in line_str):
-                    spk_sub = re.search(r"Speaker:\s*([^\|\(\n]+)", line_str)
-                    if spk_sub:
-                        current_speaker = spk_sub.group(1).strip()
-                    continue
-
-                if line_str.startswith('Excerpt:') or line_str.startswith('Quote:'):
-                    quote_text = re.sub(r'^(Excerpt|Quote):\s*', '', line_str).strip().strip('"')
-                    if current_speaker and quote_text:
-                        excerpts.append((current_speaker, quote_text))
-                        current_speaker = None
-                    continue
-
-            if excerpts:
-                # Check for direct participation or speaker inquiry (e.g., "What did X say?", "Was X involved?", "Did X join?")
-                participation_match = re.search(r"(?:what\s+did\s+([a-zA-Z]+)\s+say|was\s+([a-zA-Z]+)\s+(?:involved|part|attend|present|there)|did\s+([a-zA-Z]+)\s+(?:join|participat|say|speak|talk))", lower_prompt)
-                target_person = next((g for g in participation_match.groups() if g), None) if participation_match else None
-
-                if target_person:
-                    person_found = False
-                    person_statements = []
-                    for spk, q in excerpts:
-                        if target_person.lower() in spk.lower():
-                            person_found = True
-                            person_statements.append((spk, q))
-                    if person_found:
-                        spk_name = person_statements[0][0]
-                        quote_sample = person_statements[0][1]
-                        return f"Yes, {spk_name} was actively involved in the meeting. During the discussion, {spk_name} addressed this point directly, noting that \"{quote_sample}\""
-                    else:
-                        speakers_list = list(dict.fromkeys(spk for spk, _ in excerpts))
-                        return f"Based on the meeting records, {target_person.capitalize()} is not identified as an active speaker in these discussions. The recorded participants for this topic were {', '.join(speakers_list)}."
-
-                # Check for Pricing / Sales questions
-                if any(w in lower_prompt for w in ["pricing", "price", "cost", "tier", "seats", "bill"]):
-                    first_spk, first_quote = excerpts[0]
-                    narrative = f"During the sales and commercial strategy discussion, the team established several key pricing parameters. Specifically, {first_spk} confirmed that {first_quote.lower() if first_quote.endswith('.') else first_quote}."
-                    if len(excerpts) > 1:
-                        second_spk, second_quote = excerpts[1]
-                        narrative += f" Additionally, {second_spk} addressed customer requirements, highlighting that {second_quote.lower() if second_quote.endswith('.') else second_quote}."
-                    return narrative
-
-                # Check for Security / SOC2 / Compliance / Data residency questions
-                if any(w in lower_prompt for w in ["security", "soc2", "audit", "compliance", "encrypt", "residency", "eu region"]):
-                    first_spk, first_quote = excerpts[0]
-                    narrative = f"During the discussions, the participants reviewed regulatory and architectural commitments. {first_spk} highlighted that {first_quote.lower() if first_quote.endswith('.') else first_quote}."
-                    if len(excerpts) > 1:
-                        second_spk, second_quote = excerpts[1]
-                        narrative += f" In addition, {second_spk} confirmed that {second_quote.lower() if second_quote.endswith('.') else second_quote}."
-                    return narrative
-
-                # Default conversational synthesis
-                first_spk, first_quote = excerpts[0]
-                narrative = f"Based on the meeting discussions, {first_spk} addressed this directly, stating that {first_quote.lower() if first_quote.endswith('.') else first_quote}."
-                if len(excerpts) > 1:
-                    second_spk, second_quote = excerpts[1]
-                    narrative += f" Furthermore, {second_spk} discussed that {second_quote.lower() if second_quote.endswith('.') else second_quote}."
-                return narrative
-
-        # 2. Grounded synthesis for Portfolio Overview Data
-        if 'portfolio overview data:' in lower_prompt:
-            overview_lines = [
-                line.strip() for line in user_prompt.splitlines()
-                if line.strip().startswith('-') or 'Total' in line
-            ]
-            if overview_lines:
-                return '### 📊 Project Status & Health Overview' + chr(10) + chr(10) + chr(10).join(overview_lines)
-
-        # 3. Boundary Confirmation Checks
-        if 'analyze if there is a substantive topic shift' in lower_prompt:
-            if 'turn b' in lower_prompt:
-                if any(w in lower_prompt for w in ['database', 'postgres', 'redis', 'checkpointer']):
-                    return 'YES'
-                if any(w in lower_prompt for w in ['sla', 'webhook', 'celery', 'timeout']):
-                    return 'YES'
-            return 'NO'
-
-        # 4. Chapter Title Generation
-        if 'generate a concise 3-to-6 word chapter title' in lower_prompt:
-            if 'checkpointer' in lower_prompt or 'postgres' in lower_prompt or 'database' in lower_prompt:
-                return 'Database Architecture & Checkpointer'
-            if 'sla' in lower_prompt or 'webhook' in lower_prompt:
-                return 'Webhook Ingestion & SLA Guardrails'
-            if 'normaliz' in lower_prompt:
-                return 'Transcript Ingestion & Normalization'
-            return 'Meeting Discussion & Planning'
-
-        return 'Based on the meeting records, the discussions have been cross-checked and verified against recorded speaker turns.'
+        yield heuristic_fallback(messages)
 
 
 # Singleton client instance

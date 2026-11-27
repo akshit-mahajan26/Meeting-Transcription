@@ -9,6 +9,19 @@ from ..core.config import Settings, settings
 
 logger = logging.getLogger(__name__)
 
+_semaphores: dict[str, asyncio.Semaphore] = {}
+
+
+def _limit(purpose: str) -> asyncio.Semaphore:
+    """Process-wide concurrency limit for embedding batches, created lazily: 'chat' or 'ingest'."""
+    if purpose not in ("chat", "ingest"):
+        raise ValueError(f"purpose must be 'chat' or 'ingest', got {purpose!r}")
+    sem = _semaphores.get(purpose)
+    if sem is None:
+        size = settings.embed_chat_max_concurrency if purpose == "chat" else settings.embed_ingest_max_concurrency
+        sem = _semaphores[purpose] = asyncio.Semaphore(size)
+    return sem
+
 
 class EmbeddingServiceError(Exception):
     """Custom exception raised when embedding generation fails."""
@@ -41,10 +54,11 @@ class EmbeddingService:
             self.client = AsyncOpenAI(
                 api_key=self.api_key,
                 base_url=self.base_url,
-                timeout=45.0,
+                max_retries=self.config.llm_max_retries,
+                timeout=self.config.llm_timeout_seconds,
             )
 
-    async def generate_embeddings(self, texts: list[str]) -> list[list[float]]:
+    async def generate_embeddings(self, texts: list[str], purpose: str = "ingest") -> list[list[float]]:
         """
         Asynchronously generate high-dimensional vector embeddings for a list of text strings routed through Gemini.
 
@@ -69,7 +83,7 @@ class EmbeddingService:
                     for i in range(0, len(sanitized_texts), batch_size)
                 ]
 
-                emb_sem = asyncio.Semaphore(4)
+                emb_sem = _limit(purpose)
 
                 async def _fetch_batch(batch_slice: list[str]) -> list[list[float]]:
                     async with emb_sem:

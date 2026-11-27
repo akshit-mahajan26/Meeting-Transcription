@@ -2,6 +2,7 @@ import logging
 from datetime import UTC, datetime
 
 from fastapi import HTTPException, status
+from sqlalchemy import func
 from sqlalchemy.orm import Session, defer
 
 from ..core.config import Settings, get_settings
@@ -45,19 +46,21 @@ class MeetingService:
         self.settings = settings or get_settings()
 
     def list_meetings(self) -> list[MeetingSummary]:
-        meetings = (
-            self.db.query(MeetingModel)
+        turn_counts = (
+            self.db.query(SpeakerTurnModel.meeting_id, func.count().label("turn_count"))
+            .filter(SpeakerTurnModel.user_id == self.user_id)
+            .group_by(SpeakerTurnModel.meeting_id)
+            .subquery()
+        )
+        rows = (
+            self.db.query(MeetingModel, turn_counts.c.turn_count)
+            .outerjoin(turn_counts, turn_counts.c.meeting_id == MeetingModel.id)
             .filter(MeetingModel.user_id == self.user_id)
             .order_by(MeetingModel.created_at.desc())
             .all()
         )
         summaries: list[MeetingSummary] = []
-        for m in meetings:
-            turn_count = (
-                self.db.query(SpeakerTurnModel)
-                .filter(SpeakerTurnModel.meeting_id == m.id, SpeakerTurnModel.user_id == self.user_id)
-                .count()
-            )
+        for m, turn_count in rows:
             summaries.append(
                 MeetingSummary(
                     id=m.id,
@@ -67,7 +70,7 @@ class MeetingService:
                     duration=m.duration,
                     status=m.status,
                     project_id=unscope_project_id(m.project_id, self.user_id),
-                    total_turns=turn_count,
+                    total_turns=turn_count or 0,
                     created_at=m.created_at,
                 )
             )
